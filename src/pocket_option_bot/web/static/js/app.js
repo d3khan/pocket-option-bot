@@ -21,11 +21,6 @@ function connectionStatus() {
             document.addEventListener('connectionStatus', (e) => {
                 this.connected = e.detail?.status === 'connected';
             });
-            // Fetch initial status (falls back gracefully)
-            fetch('/api/connection-status')
-                .then(r => r.json())
-                .then(data => { this.connected = data.connected; })
-                .catch(() => {});
         }
     };
 }

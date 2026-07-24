@@ -13,7 +13,7 @@ def get_templates(request: Request):
     return request.app.state.templates
 
 @router.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request, response: Response, user: str = Depends(get_current_user_redirect)):
+async def dashboard(request: Request, user: str = Depends(get_current_user_redirect)):
     """Main dashboard page. Redirects to login if not authenticated."""
     return get_templates(request).TemplateResponse("dashboard.html", {"request": request})
 

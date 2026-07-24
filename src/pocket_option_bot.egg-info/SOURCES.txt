@@ -16,6 +16,7 @@ src/pocket_option_bot/core/events.py
 src/pocket_option_bot/core/risk_manager.py
 src/pocket_option_bot/core/session_mgr.py
 src/pocket_option_bot/core/strategy.py
+src/pocket_option_bot/models/__init__.py
 src/pocket_option_bot/models/bot_state.py
 src/pocket_option_bot/models/trade.py
 src/pocket_option_bot/services/persistence.py
@@ -27,5 +28,7 @@ src/pocket_option_bot/web/server.py
 src/pocket_option_bot/web/routes/api.py
 src/pocket_option_bot/web/routes/ui.py
 src/pocket_option_bot/web/routes/ws.py
+tests/test_connection.py
+tests/test_discover_api.py
 tests/test_risk_manager.py
 tests/test_strategy.py

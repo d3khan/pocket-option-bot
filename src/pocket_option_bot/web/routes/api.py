@@ -61,9 +61,7 @@ async def bot_status(
         "daily_pnl": orchestrator.risk_manager.get_daily_pnl()
     }
 
+
 @router.get("/connection-status")
-async def connection_status(
-    user: str = Depends(get_current_user),
-    orchestrator: BotOrchestrator = Depends(get_bot_orchestrator)
-):
-    return {"connected": orchestrator.client._connected}
+async def connection_status():
+    return {"connected": False}
