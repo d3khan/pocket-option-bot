@@ -1,25 +1,51 @@
+"""Pydantic settings with YAML and environment variable loading."""
+
+import os
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Any
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import yaml
+
+
+def _interpolate_env(value: Any) -> Any:
+    """Recursively replace ${VAR} with environment variable values."""
+    if isinstance(value, str):
+        def replace_match(match):
+            var_name = match.group(1)
+            return os.getenv(var_name, match.group(0))
+        return re.sub(r'\$\{([^}]+)\}', replace_match, value)
+    elif isinstance(value, dict):
+        return {k: _interpolate_env(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_interpolate_env(v) for v in value]
+    else:
+        return value
+
 
 class PocketOptionConfig(BaseSettings):
     ssid: str = Field(..., alias="PO_SSID")
     is_demo: bool = True
 
-    model_config = SettingsConfigDict(populate_by_name=True)
+    model_config = SettingsConfigDict(populate_by_name=True, extra="ignore")
+
 
 class AuthConfig(BaseSettings):
     username: str = "d3khan04"
     password_hash: str = ""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
 
 class JWTConfig(BaseSettings):
     secret_key: str = Field(..., alias="JWT_SECRET")
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440
 
-    model_config = SettingsConfigDict(populate_by_name=True)
+    model_config = SettingsConfigDict(populate_by_name=True, extra="ignore")
+
 
 class BotConfig(BaseSettings):
     base_stake: float = 1.0
@@ -30,14 +56,21 @@ class BotConfig(BaseSettings):
     max_consecutive_losses: int = 5
     max_daily_loss: float = 50.0
 
+    model_config = SettingsConfigDict(extra="ignore")
+
+
 class WebConfig(BaseSettings):
     port: int = 8000
     session_secret: str = Field(..., alias="SESSION_SECRET")
 
-    model_config = SettingsConfigDict(populate_by_name=True)
+    model_config = SettingsConfigDict(populate_by_name=True, extra="ignore")
+
 
 class DbConfig(BaseSettings):
     path: str = "/app/data/bot_data.db"
+
+    model_config = SettingsConfigDict(extra="ignore")
+
 
 class Settings(BaseSettings):
     pocket_option: PocketOptionConfig = Field(default_factory=PocketOptionConfig)
@@ -59,6 +92,8 @@ class Settings(BaseSettings):
     def from_yaml(cls, yaml_path: Path) -> "Settings":
         with open(yaml_path, "r") as f:
             raw = yaml.safe_load(f)
-        return cls(**raw)
+        interpolated = _interpolate_env(raw)
+        return cls(**interpolated)
+
 
 settings = Settings.from_yaml(Path(__file__).parent.parent.parent / "config" / "settings.yaml")
