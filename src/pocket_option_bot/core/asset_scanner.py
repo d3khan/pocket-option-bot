@@ -42,7 +42,17 @@ class AssetScanner:
         """Fetch assets and filter by payout >= min_payout, sort descending."""
         assets = await self.client.get_assets()
         eligible = []
-        for symbol, info in assets.items():
+        # assets is expected to be a dict; if it's a list, we handle it
+        if isinstance(assets, dict):
+            items = assets.items()
+        else:
+            # Assume list of dicts, try to find symbol key
+            if assets and "symbol" in assets[0]:
+                items = [(item["symbol"], item) for item in assets]
+            else:
+                logger.warning("Unknown asset format, cannot filter")
+                items = []
+        for symbol, info in items:
             payout = info.get("payout", 0)
             if payout >= self.min_payout:
                 eligible.append({

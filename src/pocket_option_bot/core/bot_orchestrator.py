@@ -37,26 +37,38 @@ class BotOrchestrator:
     async def start(self):
         """Start the bot: connect, scan, subscribe, and begin trading loop."""
         if self._running:
+            logger.warning("Bot already running")
             return
         self._stop_requested = False
         self._running = True
+
+        # Start event bus first
         await self.event_bus.start()
 
-        # Subscribe to balance updates from client
+        # Subscribe to balance updates
         self.event_bus.subscribe("balance_update", self._on_balance_update)
 
+        # Connect to Pocket Option
         await self.client.connect()
+
+        # Start asset scanner and candle stream
         await self.asset_scanner.start()
         await self.candle_stream.start()
+
         # Select initial asset
         initial_asset = await self.asset_scanner.switch_asset()
         if initial_asset is None:
             logger.error("No eligible assets found. Stopping.")
             await self.stop()
             return
+
+        # Broadcast initial stats (after asset selection)
+        await self._broadcast_stats()
+
         # Subscribe to signal and trade result events
         self.event_bus.subscribe("signal_generated", self._on_signal)
         self.event_bus.subscribe("trade_closed", self._on_trade_closed)
+
         # Start trade loop
         self._trade_task = asyncio.create_task(self._trade_loop())
         await self.event_bus.emit("bot_status_changed", {"status": "running"})
@@ -83,16 +95,13 @@ class BotOrchestrator:
     async def _on_balance_update(self, data: dict):
         """Handle balance update from Pocket Option client."""
         balance = data.get("balance", 0.0)
-        # Update session manager balance
         self.session_mgr.set_real_balance(balance)
-        # Broadcast updated stats
         await self._broadcast_stats()
+        logger.debug(f"Balance updated: {balance}")
 
     async def _trade_loop(self):
         """Main loop waiting for signals and executing trades."""
         while self._running and not self._stop_requested:
-            # The actual trading is triggered by signals; we use asyncio events.
-            # We'll just keep the loop alive.
             await asyncio.sleep(1)
 
     async def _on_signal(self, data: dict):
@@ -103,7 +112,6 @@ class BotOrchestrator:
         direction = data["direction"]
         stake = self.risk_manager.get_stake()
         duration = settings.bot.trade_duration
-        # Place trade
         trade_id = await self.client.place_trade(asset, direction, stake, duration)
         if trade_id:
             trade = Trade(
@@ -122,9 +130,8 @@ class BotOrchestrator:
     async def _on_trade_closed(self, data: dict):
         """Process trade result, update risk and session, persist."""
         trade_id = data.get("id")
-        result = data.get("result")  # "WIN" or "LOSS"
+        result = data.get("result")
         profit = data.get("profit", 0.0)
-        # Find trade in session
         trade = next((t for t in self.session_mgr.trades if t.id == trade_id), None)
         if trade:
             if result == "WIN":
@@ -138,7 +145,6 @@ class BotOrchestrator:
                     await self.event_bus.emit("bot_status_changed", {"status": "paused_max_losses"})
             await self.persistence.update_trade(trade)
             await self.event_bus.emit("trade_closed", trade.dict())
-            # Broadcast stats update
             await self._broadcast_stats()
 
     async def _broadcast_stats(self):
@@ -147,4 +153,6 @@ class BotOrchestrator:
         stats["daily_pnl"] = self.risk_manager.get_daily_pnl()
         stats["current_stake"] = self.risk_manager.get_stake()
         stats["consecutive_losses"] = self.risk_manager.get_consecutive_losses()
+        stats["current_asset"] = self.asset_scanner._current_asset
         await self.event_bus.emit("stats_update", stats)
+        logger.debug(f"Broadcast stats: {stats}")

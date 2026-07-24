@@ -86,15 +86,16 @@ async def lifespan(app: FastAPI):
         logger.error(f"Database initialization failed: {e}")
         sys.exit(1)
 
+    # Set up app state subscriptions BEFORE any events are emitted
+    setup_app_state_subscriptions()
+    logger.info("App state subscriptions set up")
+
     try:
         await setup_event_bus_forwarding()
         logger.info("Event bus forwarding set up")
     except Exception as e:
         logger.error(f"Event bus setup failed: {e}")
 
-    # Set up app state subscriptions
-    setup_app_state_subscriptions()
-    logger.info("App state subscriptions set up")
     yield
 
     logger.info("Shutting down")
@@ -174,18 +175,39 @@ app.dependency_overrides[get_persistence] = lambda: persistence
 async def update_stats_from_event(data: dict):
     """Update app.state.stats from stats_update event."""
     app.state.stats.update(data)
+    logger.debug(f"Stats updated: {data}")
+
 async def update_connection_status(data: dict):
     """Update app.state.connected from connection_status event."""
     app.state.connected = data.get("status") == "connected"
+    logger.info(f"Connection status updated: {app.state.connected}")
+
 async def update_bot_status(data: dict):
     """Update app.state.bot_status from bot_status_changed event."""
     app.state.bot_status = data.get("status", "stopped")
+    logger.info(f"Bot status updated: {app.state.bot_status}")
 
-# We'll subscribe after the event bus is set up in lifespan
+async def update_candle_from_event(data: dict):
+    """Update the current forming candle in app state."""
+    app.state.current_candle = data
+
+async def update_trade_from_event(data: dict):
+    """Add or update a trade in app.state.trades."""
+    trade_id = data.get("id")
+    for i, t in enumerate(app.state.trades):
+        if t.get("id") == trade_id:
+            app.state.trades[i] = data
+            return
+    app.state.trades.append(data)
+
 def setup_app_state_subscriptions():
+    """Register all app state update handlers with the event bus."""
     event_bus.subscribe("stats_update", update_stats_from_event)
     event_bus.subscribe("connection_status", update_connection_status)
     event_bus.subscribe("bot_status_changed", update_bot_status)
+    event_bus.subscribe("candle_tick", update_candle_from_event)
+    event_bus.subscribe("trade_new", update_trade_from_event)
+    event_bus.subscribe("trade_closed", update_trade_from_event)
 
 # Health check
 @app.get("/health")

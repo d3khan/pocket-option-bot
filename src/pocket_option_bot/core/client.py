@@ -350,24 +350,34 @@ class PocketOptionClient:
     # Assets & Market Data
     # ──────────────────────────────────────────────
 
-    async def get_assets(self) -> List[Dict[str, Any]]:
+    async def get_assets(self) -> Dict[str, Dict[str, Any]]:
         """
         Fetch all tradable assets with their details.
 
         Returns:
-            List of asset dictionaries containing:
-            - id, symbol, name, asset_type, payout, is_otc, is_active, allowed_candles
+            Dict mapping symbol -> asset info dict.
         """
         async with self._client_lock:
             if not self._client or self._state != ConnectionState.CONNECTED:
-                return []
+                return {}
             client = self._client
 
         try:
-            return await client.active_assets()
+            result = await client.active_assets()
+            # If the library returns a list, convert to dict using a known key
+            if isinstance(result, list):
+                # Try to find a unique identifier, e.g. "symbol" or "id"
+                if result and "symbol" in result[0]:
+                    return {item["symbol"]: item for item in result}
+                elif result and "id" in result[0]:
+                    return {item["id"]: item for item in result}
+                else:
+                    # Fallback: use index as key (not ideal but prevents crash)
+                    return {str(i): item for i, item in enumerate(result)}
+            return result
         except Exception as e:
             logger.error("Failed to fetch assets: %s", e)
-            return []
+            return {}
 
     async def get_payout(self, asset: Optional[str] = None) -> Union[Dict[str, int], int, None]:
         """
@@ -560,10 +570,13 @@ class PocketOptionClient:
         try:
             async for msg in sub:
                 try:
-                    # Emit to event bus as well
+                    # Emit asset-specific and generic candle events
                     await self.event_bus.emit(f"candle_{asset}", msg)
+                    # Add asset to the message for generic handler
+                    msg_with_asset = {**msg, "asset": asset}
+                    await self.event_bus.emit("candle", msg_with_asset)
                     # Call user callback
-                    await callback(msg)
+                    await callback(msg_with_asset)
                 except Exception as e:
                     logger.error("Subscription callback error for %s: %s", asset, e)
         except Exception as e:
