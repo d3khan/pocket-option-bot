@@ -56,13 +56,11 @@ persistence = PersistenceService(db_path=settings.db.path)
 # ---------- Authentication Middleware ----------
 class AuthRedirectMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Exclude public paths
         public_paths = ["/login", "/auth", "/static", "/health", "/favicon.ico"]
         path = request.url.path
         if any(path.startswith(p) for p in public_paths):
             return await call_next(request)
 
-        # Check for valid JWT in cookie
         token = request.cookies.get("access_token")
         if not token:
             return RedirectResponse(url="/login", status_code=303)
@@ -75,13 +73,11 @@ class AuthRedirectMiddleware(BaseHTTPMiddleware):
         except JWTError:
             return RedirectResponse(url="/login", status_code=303)
 
-        # Proceed if authenticated
         return await call_next(request)
 
 # Lifespan
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     logger.info("Starting application")
     try:
         await persistence.initialize()
@@ -98,7 +94,6 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
     logger.info("Shutting down")
     await persistence.close()
     orch = get_bot_orchestrator()
@@ -112,7 +107,7 @@ app.router.lifespan_context = lifespan
 # Add middleware
 app.add_middleware(AuthRedirectMiddleware)
 
-# CORS (for local dev)
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -127,7 +122,7 @@ app.include_router(ui.router)
 app.include_router(api.router, prefix="/api")
 app.include_router(ws.router)
 
-# Mount Socket.IO app
+# Mount Socket.IO
 app.mount("/socket.io/", socketio_app)
 logger.info("Socket.IO mounted")
 
@@ -135,7 +130,7 @@ logger.info("Socket.IO mounted")
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "web" / "static"), name="static")
 logger.info("Static files mounted")
 
-# Templates with custom filter
+# ---------- Templates and custom filter ----------
 templates = Jinja2Templates(directory=Path(__file__).parent / "web" / "templates")
 
 def currency_filter(value):
@@ -144,7 +139,7 @@ def currency_filter(value):
 templates.env.filters["currency"] = currency_filter
 app.state.templates = templates
 
-# Set initial state for templates
+# ---------- Application state (used by partials) ----------
 app.state.stats = {
     "balance": 0.0,
     "total_pnl": 0.0,
@@ -168,7 +163,7 @@ app.state.current_candle = {}
 app.state.bot_status = "stopped"
 app.state.connected = False
 
-# Dependency overrides for testing
+# Override dependencies for testing
 app.dependency_overrides[get_event_bus] = lambda: event_bus
 app.dependency_overrides[get_persistence] = lambda: persistence
 
@@ -177,7 +172,6 @@ app.dependency_overrides[get_persistence] = lambda: persistence
 async def health():
     return {"status": "ok"}
 
-# If run directly
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("pocket_option_bot.main:app", host="0.0.0.0", port=settings.web.port, reload=True)

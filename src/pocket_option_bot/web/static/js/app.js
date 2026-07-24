@@ -21,9 +21,36 @@ function connectionStatus() {
             document.addEventListener('connectionStatus', (e) => {
                 this.connected = e.detail?.status === 'connected';
             });
+            fetch('/api/connection-status')
+                .then(r => r.json())
+                .then(data => { this.connected = data.connected; })
+                .catch(() => {});
         }
     };
 }
+
+// ---------- Global 401 handler for all fetch/XHR requests ----------
+// If any request returns 401, redirect to login.
+(function() {
+    const originalFetch = window.fetch;
+    window.fetch = function(...args) {
+        return originalFetch.apply(this, args)
+            .then(response => {
+                if (response.status === 401) {
+                    window.location.href = '/login';
+                    throw new Error('Unauthorized');
+                }
+                return response;
+            });
+    };
+})();
+
+// Also handle HTMX 401 responses
+document.addEventListener('htmx:responseError', (e) => {
+    if (e.detail.xhr.status === 401) {
+        window.location.href = '/login';
+    }
+});
 
 // ---------- Socket.IO Setup ----------
 document.addEventListener('DOMContentLoaded', function() {
@@ -61,7 +88,6 @@ document.addEventListener('DOMContentLoaded', function() {
 // ---------- Alpine re-init after HTMX swaps ----------
 document.addEventListener('htmx:afterSwap', (e) => {
     if (window.Alpine) {
-        // Destroy any existing Alpine components in the swapped element
         if (typeof Alpine.destroyTree === 'function') {
             Alpine.destroyTree(e.target);
         }

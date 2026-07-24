@@ -63,5 +63,8 @@ async def bot_status(
 
 
 @router.get("/connection-status")
-async def connection_status():
-    return {"connected": False}
+async def connection_status(
+    user: str = Depends(get_current_user),
+    orchestrator: BotOrchestrator = Depends(get_bot_orchestrator)
+):
+    return {"connected": orchestrator.client._connected}
