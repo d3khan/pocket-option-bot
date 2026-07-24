@@ -1,0 +1,10 @@
+{% set candle = request.app.state.current_candle or {} %}
+<div class="candle-display" x-data="candleData()">
+    <div class="candle-header">Forming Candle - {{ candle.get('asset', 'N/A') }}</div>
+    <div class="candle-values">
+        <span>Open: {{ candle.get('open', 0.0) }}</span>
+        <span>High: {{ candle.get('high', 0.0) }}</span>
+        <span>Low: {{ candle.get('low', 0.0) }}</span>
+        <span>Close: <span :class="{'bullish': candle.close > candle.open, 'bearish': candle.close < candle.open}">{{ candle.get('close', 0.0) }}</span></span>
+    </div>
+</div>

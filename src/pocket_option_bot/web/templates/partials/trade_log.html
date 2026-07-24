@@ -1,0 +1,25 @@
+{% set trades = request.app.state.trades %}
+<table class="trade-log">
+    <thead>
+        <tr>
+            <th>Time</th>
+            <th>Asset</th>
+            <th>Direction</th>
+            <th>Stake</th>
+            <th>Result</th>
+            <th>P&L</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for trade in trades %}
+        <tr>
+            <td>{{ trade.open_time.strftime('%H:%M:%S') }}</td>
+            <td>{{ trade.asset }}</td>
+            <td>{{ trade.direction }}</td>
+            <td>{{ trade.stake | currency }}</td>
+            <td>{{ trade.result or 'Pending' }}</td>
+            <td>{{ trade.pnl | currency if trade.pnl is not none else '-' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>

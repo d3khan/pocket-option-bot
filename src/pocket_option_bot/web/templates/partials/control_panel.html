@@ -1,0 +1,17 @@
+{% set config = request.app.state.config %}
+<div class="control-panel">
+    <div class="controls">
+        <button hx-post="/api/bot/start" hx-target="#control-panel" hx-swap="innerHTML">Start Bot</button>
+        <button hx-post="/api/bot/stop" hx-target="#control-panel" hx-swap="innerHTML">Stop Bot</button>
+        <button hx-post="/api/bot/force_switch" hx-target="#control-panel" hx-swap="innerHTML">Force Asset Switch</button>
+    </div>
+    <div class="config-info">
+        <span>Base Stake: {{ config.bot.base_stake }}</span>
+        <span>Multiplier: {{ config.bot.multiplier }}</span>
+        <span>Max Stake: {{ config.bot.max_stake }}</span>
+        <span>Min Payout: {{ config.bot.min_payout }}%</span>
+    </div>
+    <div class="bot-status">
+        Status: {{ request.app.state.bot_status }}
+    </div>
+</div>

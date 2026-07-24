@@ -1,0 +1,46 @@
+Metadata-Version: 2.4
+Name: pocket-option-bot
+Version: 1.0.0
+Summary: Real‑time trading bot for Pocket Option with Python‑only WebUI
+Author-email: d3khan04 <d3khan04@example.com>
+License: MIT
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.30.0
+Requires-Dist: python-socketio>=5.11.0
+Requires-Dist: jinja2>=3.1.4
+Requires-Dist: python-jose[cryptography]>=3.3.0
+Requires-Dist: passlib[bcrypt]>=1.7.4
+Requires-Dist: aiosqlite>=0.20.0
+Requires-Dist: pydantic-settings>=2.4.0
+Requires-Dist: pyyaml>=6.0.2
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: structlog>=24.4.0
+Requires-Dist: BinaryOptionsToolsV2>=0.1.0
+Requires-Dist: python-dotenv>=1.0.1
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.2; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23.8; extra == "dev"
+Requires-Dist: ruff>=0.6.0; extra == "dev"
+
+# Pocket Option Trading Bot
+
+A fully automated trading bot for Pocket Option with a real‑time Python‑only WebUI. Built with FastAPI, HTMX, Alpine.js, and Socket.IO.
+
+## Features
+- Real‑time candle stream processing with 30‑second signal trigger
+- Candle‑color trading strategy (CALL if close > open else PUT)
+- Martingale risk management with configurable multiplier, max stake, consecutive loss limit, and daily loss limit
+- Dynamic asset scanning and switching (payout ≥ 92%)
+- Real‑time dashboard with live stats, trade log, candle display, and control panel
+- JWT authentication with httpOnly cookie
+- Persistent SQLite database for trade history
+- Fully containerized with Docker, ready for Render.com deployment
+
+## Setup
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/d3khan/pocket-option-bot.git
+   cd pocket-option-bot

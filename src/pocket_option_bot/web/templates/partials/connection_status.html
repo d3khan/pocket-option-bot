@@ -1,0 +1,6 @@
+<div class="connection-status" x-data="connectionStatus()">
+    <span>Pocket Option Account: </span>
+    <span class="status-badge" :class="{'connected': connected, 'disconnected': !connected}">
+        <span x-text="connected ? 'Connected' : 'Disconnected'"></span>
+    </span>
+</div>

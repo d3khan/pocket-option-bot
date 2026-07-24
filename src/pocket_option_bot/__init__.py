@@ -1,0 +1,1 @@
+"""Pocket Option Trading Bot package."""

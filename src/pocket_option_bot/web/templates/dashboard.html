@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="dashboard">
+    <header>
+        <h1>d3khan</h1>
+        <form action="/auth/logout" method="post" style="display: inline;">
+            <button type="submit" class="btn-danger">Logout</button>
+        </form>
+    </header>
+    <main>
+        <!-- Stats Cards -->
+        <section id="stats-cards" hx-get="/partials/stats_cards" hx-trigger="load, statsUpdate from:body, every 5s" hx-swap="innerHTML">
+            Loading stats...
+        </section>
+        <!-- Candle Display -->
+        <section id="candle-display" hx-get="/partials/candle_display" hx-trigger="load, candleTick from:body, every 1s" hx-swap="innerHTML">
+            Loading candle data...
+        </section>
+        <!-- Control Panel -->
+        <section id="control-panel" hx-get="/partials/control_panel" hx-trigger="load, botStatusChange from:body" hx-swap="innerHTML">
+            Loading controls...
+        </section>
+        <!-- Trade Log -->
+        <section id="trade-log" hx-get="/partials/trade_log" hx-trigger="load, tradeNew from:body, tradeClosed from:body" hx-swap="innerHTML">
+            Loading trade log...
+        </section>
+        <!-- Connection Status -->
+        <section id="connection-status" hx-get="/partials/connection_status" hx-trigger="load, connectionStatus from:body" hx-swap="innerHTML">
+            Checking connection...
+        </section>
+    </main>
+</div>
+{% endblock %}
