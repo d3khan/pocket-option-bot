@@ -41,6 +41,10 @@ class BotOrchestrator:
         self._stop_requested = False
         self._running = True
         await self.event_bus.start()
+
+        # Subscribe to balance updates from client
+        self.event_bus.subscribe("balance_update", self._on_balance_update)
+
         await self.client.connect()
         await self.asset_scanner.start()
         await self.candle_stream.start()
@@ -72,8 +76,17 @@ class BotOrchestrator:
         await self.event_bus.stop()
         self.event_bus.unsubscribe("signal_generated", self._on_signal)
         self.event_bus.unsubscribe("trade_closed", self._on_trade_closed)
+        self.event_bus.unsubscribe("balance_update", self._on_balance_update)
         await self.event_bus.emit("bot_status_changed", {"status": "stopped"})
         logger.info("Bot stopped")
+
+    async def _on_balance_update(self, data: dict):
+        """Handle balance update from Pocket Option client."""
+        balance = data.get("balance", 0.0)
+        # Update session manager balance
+        self.session_mgr.set_real_balance(balance)
+        # Broadcast updated stats
+        await self._broadcast_stats()
 
     async def _trade_loop(self):
         """Main loop waiting for signals and executing trades."""

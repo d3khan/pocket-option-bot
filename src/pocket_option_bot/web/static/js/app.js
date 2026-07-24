@@ -21,19 +21,18 @@ function connectionStatus() {
             document.addEventListener('connectionStatus', (e) => {
                 this.connected = e.detail?.status === 'connected';
             });
-            fetch('/api/connection-status')
-                .then(r => r.json())
-                .then(data => { this.connected = data.connected; })
-                .catch(() => {});
+            document.addEventListener('connection_status', (e) => {
+                this.connected = e.detail?.status === 'connected';
+            });
         }
     };
 }
 
 // ---------- Global 401 handler for all fetch/XHR requests ----------
 // If any request returns 401, redirect to login.
-(function() {
+(function () {
     const originalFetch = window.fetch;
-    window.fetch = function(...args) {
+    window.fetch = function (...args) {
         return originalFetch.apply(this, args)
             .then(response => {
                 if (response.status === 401) {
@@ -53,7 +52,7 @@ document.addEventListener('htmx:responseError', (e) => {
 });
 
 // ---------- Socket.IO Setup ----------
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     const socket = io({
         path: '/socket.io/',
         transports: ['polling', 'websocket']
@@ -67,19 +66,20 @@ document.addEventListener('DOMContentLoaded', function() {
         console.log('Socket.IO disconnected');
     });
 
-    const events = [
-        'stats_update',
-        'trade_new',
-        'trade_closed',
-        'candle_tick',
-        'asset_switched',
-        'connection_status',
-        'bot_status_changed'
-    ];
+    // Map Socket.IO events to HTMX trigger events (PascalCase)
+    const eventMap = {
+        'stats_update': 'statsUpdate',
+        'trade_new': 'tradeNew',
+        'trade_closed': 'tradeClosed',
+        'candle_tick': 'candleTick',
+        'asset_switched': 'assetSwitched',
+        'connection_status': 'connectionStatus',
+        'bot_status_changed': 'botStatusChange'
+    };
 
-    events.forEach(eventName => {
-        socket.on(eventName, (data) => {
-            const customEvent = new CustomEvent(eventName, { detail: data });
+    Object.entries(eventMap).forEach(([socketEvent, htmxEvent]) => {
+        socket.on(socketEvent, (data) => {
+            const customEvent = new CustomEvent(htmxEvent, { detail: data });
             document.body.dispatchEvent(customEvent);
         });
     });

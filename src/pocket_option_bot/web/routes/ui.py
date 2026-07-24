@@ -6,13 +6,13 @@ from fastapi.templating import Jinja2Templates
 from pathlib import Path
 
 from ...web.auth import get_current_user_redirect
-from ...utils.formatting import currency
-
 router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).parent.parent / "templates")
 
-# Register custom filters
-templates.env.filters["currency"] = currency
+# Register currency filter
+def currency_filter(value):
+    return f"${value:.2f}"
+templates.env.filters["currency"] = currency_filter
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, user: str = Depends(get_current_user_redirect)):

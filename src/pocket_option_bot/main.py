@@ -92,6 +92,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Event bus setup failed: {e}")
 
+    # Set up app state subscriptions
+    setup_app_state_subscriptions()
+    logger.info("App state subscriptions set up")
     yield
 
     logger.info("Shutting down")
@@ -166,6 +169,23 @@ app.state.connected = False
 # Override dependencies for testing
 app.dependency_overrides[get_event_bus] = lambda: event_bus
 app.dependency_overrides[get_persistence] = lambda: persistence
+
+# ---------- Subscribe to event bus to update app state ----------
+async def update_stats_from_event(data: dict):
+    """Update app.state.stats from stats_update event."""
+    app.state.stats.update(data)
+async def update_connection_status(data: dict):
+    """Update app.state.connected from connection_status event."""
+    app.state.connected = data.get("status") == "connected"
+async def update_bot_status(data: dict):
+    """Update app.state.bot_status from bot_status_changed event."""
+    app.state.bot_status = data.get("status", "stopped")
+
+# We'll subscribe after the event bus is set up in lifespan
+def setup_app_state_subscriptions():
+    event_bus.subscribe("stats_update", update_stats_from_event)
+    event_bus.subscribe("connection_status", update_connection_status)
+    event_bus.subscribe("bot_status_changed", update_bot_status)
 
 # Health check
 @app.get("/health")

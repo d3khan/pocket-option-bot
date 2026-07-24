@@ -1,9 +1,13 @@
 """Internal asynchronous event bus for decoupled communication."""
 
 import asyncio
+import logging
 from typing import Any, Callable, Dict, List, Optional, Awaitable
 
 EventCallback = Callable[[Any], Awaitable[None]]
+
+logger = logging.getLogger(__name__)
+
 
 class EventBus:
     """Simple async event bus using asyncio.Queue."""
@@ -22,10 +26,13 @@ class EventBus:
 
     def unsubscribe(self, event_type: str, callback: EventCallback):
         if event_type in self._subscribers:
-            self._subscribers[event_type].remove(callback)
+            try:
+                self._subscribers[event_type].remove(callback)
+            except ValueError:
+                pass
 
     async def emit(self, event_type: str, data: Any):
-        """Emit an event asynchronously (non‑blocking)."""
+        """Emit an event asynchronously (non-blocking)."""
         await self._queue.put((event_type, data))
 
     async def start(self):
@@ -52,9 +59,9 @@ class EventBus:
                     try:
                         await cb(data)
                     except Exception as e:
-                        # log error
-                        pass
+                        logger.error("Event callback error for '%s': %s", event_type, e, exc_info=True)
             except asyncio.CancelledError:
                 break
-            except Exception:
+            except Exception as e:
+                logger.error("Event worker error: %s", e, exc_info=True)
                 continue

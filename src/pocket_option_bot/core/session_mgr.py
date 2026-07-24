@@ -19,8 +19,8 @@ class SessionManager:
         self.current_stake = 1.0
         self.consecutive_wins = 0
         self.consecutive_losses = 0
-        self.balance = 0.0
-
+        self.balance = 0.0  # Real account balance from Pocket Option
+        self.session_pnl = 0.0  # P&L from trades in this session
     def add_trade(self, trade: Trade):
         self.trades.append(trade)
 
@@ -31,13 +31,16 @@ class SessionManager:
             self.wins += 1
             self.consecutive_wins += 1
             self.consecutive_losses = 0
-            self.total_pnl += pnl
         else:
             self.losses += 1
             self.consecutive_losses += 1
             self.consecutive_wins = 0
-            self.total_pnl += pnl  # pnl is negative for loss
-        self.balance += pnl
+        self.total_pnl += pnl
+        self.session_pnl += pnl
+
+    def set_real_balance(self, balance: float):
+        """Update real balance from Pocket Option."""
+        self.balance = balance
 
     def get_stats(self) -> Dict:
         total_trades = self.wins + self.losses
@@ -45,6 +48,7 @@ class SessionManager:
         return {
             "balance": self.balance,
             "total_pnl": self.total_pnl,
+            "session_pnl": self.session_pnl,
             "wins": self.wins,
             "losses": self.losses,
             "win_rate": round(win_rate, 2),
@@ -59,6 +63,7 @@ class SessionManager:
         self.wins = 0
         self.losses = 0
         self.total_pnl = 0.0
+        self.session_pnl = 0.0
         self.consecutive_wins = 0
         self.consecutive_losses = 0
-        self.balance = 0.0
+        # Don't reset balance - it's the real account balance
