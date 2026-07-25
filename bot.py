@@ -39,6 +39,9 @@ class TradingBot:
         self._data_task: Optional[asyncio.Task] = None
         self._update_interval = 3
 
+        # Track last candle we traded on (to avoid multiple trades per candle)
+        self._last_traded_candle_time: Optional[float] = None
+
     # ---------- Connection ----------
     async def connect(self) -> bool:
         if self._connected:
@@ -174,15 +177,19 @@ class TradingBot:
                         candle_start = datetime.fromtimestamp(self.current_candle["time"], tz=timezone.utc)
                         now = datetime.now(timezone.utc)
                         seconds_into = (now - candle_start).total_seconds()
-                        # Trade at 30-second mark of every candle (no last_signal_time guard)
+                        # Trade at 30-second mark only if we haven't traded on this candle yet
                         if 30 <= seconds_into < 31:
-                            logger.info(f"Signal triggered at {seconds_into:.1f}s for {self._current_asset}")
-                            await self._on_signal(self.current_candle)
+                            # Check if we've already traded on this candle (by comparing timestamps)
+                            candle_time = self.current_candle["time"]
+                            if self._last_traded_candle_time != candle_time:
+                                logger.info(f"Signal triggered at {seconds_into:.1f}s for {self._current_asset}")
+                                await self._on_signal(self.current_candle)
+                                self._last_traded_candle_time = candle_time
                     except Exception as e:
                         logger.error(f"Error processing candle time: {e}")
                         await asyncio.sleep(0.5)
                         continue
-                await asyncio.sleep(0.5)  # Check more frequently (twice per second)
+                await asyncio.sleep(0.5)  # Check frequently
             except asyncio.CancelledError:
                 break
             except Exception as e:
