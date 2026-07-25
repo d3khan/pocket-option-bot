@@ -186,17 +186,24 @@ async def stop_trading(request: Request):
 async def status():
     return bot.get_stats()
 
-# ---------- WebSocket ----------
-@app.websocket("/ws")
+# ---------- WebSocket ----------@app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
             stats = bot.get_stats()
-            await websocket.send_json(stats)
+            try:
+                await websocket.send_json(stats)
+            except (RuntimeError, WebSocketDisconnect, ConnectionResetError) as e:
+                logger.warning(f"WebSocket send error: {e}")
+                break
             await asyncio.sleep(1)
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        await websocket.close()
 
 # ---------- Lifespan ----------
 @asynccontextmanager

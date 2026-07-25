@@ -16,7 +16,7 @@ class TradingBot:
         self._task: Optional[asyncio.Task] = None
         self._current_asset: Optional[str] = None
         self._eligible_assets: list = []
-        self._recent_trades = deque(maxlen=2)
+        self._recent_trades = deque(maxlen=2)  # remember last 2 assets
 
         # Risk state (martingale)
         self.stake = settings.base_stake
@@ -39,7 +39,7 @@ class TradingBot:
         self._data_task: Optional[asyncio.Task] = None
         self._update_interval = 3
 
-        # Track last candle we traded on (to avoid multiple trades per candle)
+        # Prevent multiple trades on same candle
         self._last_traded_candle_time: Optional[float] = None
 
     # ---------- Connection ----------
@@ -110,6 +110,7 @@ class TradingBot:
 
         self._current_asset = chosen["symbol"]
         self.current_candle = {}  # Clear old candle data
+        self._last_traded_candle_time = None  # Reset guard for new asset
 
         asyncio.create_task(self.client.subscribe_candles(self._current_asset, self._on_candle))
         logger.info(f"Switched to asset: {self._current_asset}")
@@ -177,9 +178,8 @@ class TradingBot:
                         candle_start = datetime.fromtimestamp(self.current_candle["time"], tz=timezone.utc)
                         now = datetime.now(timezone.utc)
                         seconds_into = (now - candle_start).total_seconds()
-                        # Trade at 30-second mark only if we haven't traded on this candle yet
-                        if 30 <= seconds_into < 31:
-                            # Check if we've already traded on this candle (by comparing timestamps)
+                        
+                        if 30.0 <= seconds_into < 31.0:
                             candle_time = self.current_candle["time"]
                             if self._last_traded_candle_time != candle_time:
                                 logger.info(f"Signal triggered at {seconds_into:.1f}s for {self._current_asset}")
@@ -244,11 +244,8 @@ class TradingBot:
                 self.losses += 1
                 self.consecutive_losses += 1
                 self.stake = min(self.stake * settings.multiplier, settings.max_stake)
-                if self.consecutive_losses >= settings.max_consecutive_losses or self.daily_pnl <= -settings.max_daily_loss:
-                    logger.warning(f"Stop condition reached: losses={self.consecutive_losses}, daily_pnl={self.daily_pnl:.2f}")
-                    self.stake = settings.base_stake
-                    self.consecutive_losses = 0
-                    await self.stop_trading()
+                if self.consecutive_losses >= settings.max_consecutive_losses:
+                    self.reset_martingale()
 
             # --- SWITCH ASSET AFTER EVERY TRADE ---
             await self._switch_asset()
@@ -274,6 +271,7 @@ class TradingBot:
             "connected": self._connected,
             "running": self._running,
         }
+
     def reset_stats(self):
         """Reset all trading statistics to their initial state."""
         self.stake = settings.base_stake
@@ -288,4 +286,7 @@ class TradingBot:
         self._last_traded_candle_time = None
         self._recent_trades.clear()
         self._current_asset = None
-        logger.info("Stats reset")
+
+    def reset_martingale(self):
+        self.stake = settings.base_stake
+        self.consecutive_losses = 0

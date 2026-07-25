@@ -7,10 +7,10 @@ class Settings(BaseSettings):
     ssid: str = os.getenv("PO_SSID", "your_actual_ssid_here")
     base_stake: float = 1.0
     multiplier: float = 2.5
-    max_stake: float = 6.25
+    max_stake: float = 16
     min_payout: int = 92
     trade_duration: int = 30
-    max_consecutive_losses: int = 3
+    max_consecutive_losses: int = 4
     max_daily_loss: float = 50.0
     username: str = os.getenv("PO_USERNAME", "d3khan04")
     password: str = os.getenv("PO_PASSWORD", "fake_smile02")
