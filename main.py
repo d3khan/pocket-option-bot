@@ -18,22 +18,28 @@ from bot import TradingBot
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Create data dir
 Path("data").mkdir(exist_ok=True)
 
+# Globals
 client = POClient(settings.ssid)
 bot = TradingBot(client)
 
 app = FastAPI(title="Pocket Bot Simple")
-templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
+
+# ---------- FIX: Convert Path to string explicitly ----------
+TEMPLATES_DIR = str(Path(__file__).parent / "templates")
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
 templates.env.filters["currency"] = lambda v: f"${v:.2f}"
 
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
+# ---------- Auto-connect on startup ----------
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(bot.connect())
 
-# ---------- Session management ----------
+# ---------- Client-side signed session cookie ----------
 SESSION_COOKIE = "session"
 SESSION_EXPIRE_DAYS = 1
 serializer = URLSafeTimedSerializer(settings.secret_key)
@@ -48,9 +54,32 @@ def get_session_data(request: Request):
         return None
     try:
         data = serializer.loads(token, max_age=SESSION_EXPIRE_DAYS * 24 * 60 * 60)
-        return data.get("username")
-    except (SignatureExpired, BadSignature):
+        username = data.get("username")
+        logger.info(f"Session decoded: username={username}")
+        return username
+    except SignatureExpired as e:
+        logger.info(f"Session expired: {e}")
         return None
+    except BadSignature as e:
+        logger.info(f"Bad signature: {e}")
+        return None
+
+def set_session_cookie(response: Response, username: str):
+    signed = create_signed_session(username)
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=signed,
+        httponly=True,
+        max_age=SESSION_EXPIRE_DAYS * 24 * 60 * 60,
+        samesite="lax",
+        path="/",
+        domain=None,
+        secure=False,
+    )
+    logger.info(f"Session cookie set for {username}")
+
+def clear_session_cookie(response: Response):
+    response.delete_cookie(SESSION_COOKIE, path="/", domain=None)
 
 # ---------- Auth middleware ----------
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -58,8 +87,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path.startswith(("/login", "/static", "/favicon.ico")):
             return await call_next(request)
 
+        logger.info(f"Auth: path={request.url.path}, cookies={list(request.cookies.keys())}")
         username = get_session_data(request)
         if not username:
+            logger.warning("Unauthenticated, redirecting to login")
             return RedirectResponse("/login", status_code=303)
 
         return await call_next(request)
@@ -77,55 +108,29 @@ async def login(request: Request, response: Response):
     username = form.get("username", "").strip()
     password = form.get("password", "").strip()
 
+    logger.info(f"Login attempt: username='{username}', password='{password}'")
+    logger.info(f"Expected: username='{settings.username}', password='{settings.password}'")
+
     if username != settings.username or password != settings.password:
         return templates.TemplateResponse(
             "login.html",
             {"request": request, "error": "Invalid credentials"}
         )
 
-    # Create signed token
-    token = create_signed_session(username)
-    # Return HTML with JavaScript to set cookie and redirect
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Redirecting...</title>
-    </head>
-    <body>
-        <script>
-            // Set cookie with 1 day expiry
-            document.cookie = "session={token}; path=/; max-age=86400; SameSite=Lax";
-            window.location.href = "/";
-        </script>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html, status_code=200)
+    set_session_cookie(response, username)
+    return RedirectResponse(url="/", status_code=303)
 
 @app.post("/logout")
 async def logout(request: Request, response: Response):
-    # Delete cookie via JS
-    html = """
-    <!DOCTYPE html>
-    <html>
-    <head><meta charset="UTF-8"><title>Logging out...</title></head>
-    <body>
-        <script>
-            document.cookie = "session=; path=/; max-age=0;";
-            window.location.href = "/login";
-        </script>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html, status_code=200)
+    clear_session_cookie(response)
+    return RedirectResponse(url="/login", status_code=303)
 
 # ---------- Dashboard ----------
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     return templates.TemplateResponse("dashboard.html", {"request": request})
 
+# ---------- Partial for control panel ----------
 @app.get("/partials/control", response_class=HTMLResponse)
 async def control_partial(request: Request):
     stats = bot.get_stats()
@@ -136,6 +141,7 @@ async def control_partial(request: Request):
         "config": settings,
     })
 
+# ---------- API endpoints ----------
 @app.post("/api/connect", response_class=HTMLResponse)
 async def connect(request: Request):
     await bot.connect()
@@ -175,6 +181,7 @@ async def stop_trading(request: Request):
 async def status():
     return bot.get_stats()
 
+# ---------- WebSocket ----------
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -186,6 +193,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
 
+# ---------- Lifespan ----------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
@@ -195,4 +203,4 @@ app.router.lifespan_context = lifespan
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
