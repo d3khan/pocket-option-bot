@@ -8,34 +8,41 @@
         </form>
     </header>
     <main>
-        <section id="stats">
-            Loading stats...
-        </section>
+        <section id="stats">Loading stats...</section>
         <section id="control" hx-get="/partials/control" hx-trigger="load, every 5s" hx-swap="innerHTML">
             Loading controls...
         </section>
     </main>
 </div>
 <script>
-    // WebSocket for real-time stats
-    let ws = new WebSocket(`ws://${window.location.host}/ws`);
+    // Choose secure WebSocket protocol based on page protocol
+    const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+    let ws = new WebSocket(`${protocol}${window.location.host}/ws`);
+
     ws.onmessage = function(event) {
         const data = JSON.parse(event.data);
         const statsHtml = `
             <div class="stats-grid">
-                <div class="stat-card"><span>Balance: </span><span>$${data.balance.toFixed(2)}</span></div>
-                <div class="stat-card"><span>Asset: </span><span>${data.current_asset || "None"}</span></div>
+                <div class="stat-card"><span>Balance:</span><span>$${data.balance.toFixed(2)}</span></div>
+                <div class="stat-card"><span>Session P/L:</span><span>$${data.total_pnl.toFixed(2)}</span></div>
+                <div class="stat-card"><span>Daily P/L:</span><span>$${data.daily_pnl.toFixed(2)}</span></div>
+                <div class="stat-card"><span>Win Rate:</span><span>${data.win_rate}%</span></div>
+                <div class="stat-card"><span>Stake:</span><span>$${data.current_stake.toFixed(2)}</span></div>
+                <div class="stat-card"><span>Loss Streak:</span><span>${data.consecutive_losses}</span></div>
+                <div class="stat-card"><span>Asset:</span><span>${data.current_asset || "None"}</span></div>
             </div>
         `;
         document.getElementById('stats').innerHTML = statsHtml;
     };
+
     ws.onopen = function() {
         console.log('WebSocket connected');
     };
+
     ws.onclose = function() {
-        console.log('WebSocket disconnected, reconnecting in 1s...');
+        console.log('WebSocket disconnected, reconnecting...');
         setTimeout(() => {
-            ws = new WebSocket(`ws://${window.location.host}/ws`);
+            ws = new WebSocket(`${protocol}${window.location.host}/ws`);
         }, 1000);
     };
 </script>
