@@ -27,7 +27,7 @@ bot = TradingBot(client)
 
 app = FastAPI(title="Pocket Bot Simple")
 
-# ---------- Direct Jinja2 Environment (no Starlette wrapper) ----------
+# ---------- Direct Jinja2 Environment ----------
 TEMPLATES_DIR = str(Path(__file__).parent / "templates")
 jinja_env = Environment(
     loader=FileSystemLoader(TEMPLATES_DIR),
@@ -37,20 +37,19 @@ jinja_env = Environment(
 jinja_env.filters["currency"] = lambda v: f"${v:.2f}"
 
 def render_template(name: str, **context):
-    """Render a template and return HTMLResponse."""
     template = jinja_env.get_template(name)
     html = template.render(**context)
     return HTMLResponse(content=html)
 
-# Mount static files
+# Static files
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
-# ---------- Auto-connect on startup ----------
+# ---------- Auto-connect ----------
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(bot.connect())
 
-# ---------- Client-side signed session cookie ----------
+# ---------- Session cookie (client‑side signed) ----------
 SESSION_COOKIE = "session"
 SESSION_EXPIRE_DAYS = 1
 serializer = URLSafeTimedSerializer(settings.secret_key)
@@ -61,39 +60,29 @@ def create_signed_session(username: str) -> str:
 def get_session_data(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
-        logger.info("No session cookie found")
         return None
     try:
         data = serializer.loads(token, max_age=SESSION_EXPIRE_DAYS * 24 * 60 * 60)
-        username = data.get("username")
-        logger.info(f"Session decoded: username={username}")
-        return username
-    except SignatureExpired as e:
-        logger.info(f"Session expired: {e}")
-        return None
-    except BadSignature as e:
-        logger.info(f"Bad signature: {e}")
+        return data.get("username")
+    except (SignatureExpired, BadSignature):
         return None
 
 def set_session_cookie(response: Response, username: str):
     signed = create_signed_session(username)
-    # Render uses HTTPS, so secure=True is required
     response.set_cookie(
         key=SESSION_COOKIE,
         value=signed,
         httponly=True,
         max_age=SESSION_EXPIRE_DAYS * 24 * 60 * 60,
-        samesite="lax",    # 'lax' works for same-site; 'none' if cross-site needed
+        samesite="lax",
         path="/",
-        secure=True,       # Render uses HTTPS
-        domain=None,       # let the browser decide
+        secure=False,          # Works on both HTTP and HTTPS
     )
-    logger.info(f"Session cookie set for {username}")
 
 def clear_session_cookie(response: Response):
-    response.delete_cookie(SESSION_COOKIE, path="/", domain=None)
+    response.delete_cookie(SESSION_COOKIE, path="/")
 
-# ---------- Auth middleware ----------
+# ---------- Auth Middleware ----------
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith(("/login", "/static", "/favicon.ico")):
@@ -101,7 +90,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         username = get_session_data(request)
         if not username:
-            logger.warning("Unauthenticated, redirecting to login")
             return RedirectResponse("/login", status_code=303)
 
         return await call_next(request)
@@ -119,15 +107,8 @@ async def login(request: Request, response: Response):
     username = form.get("username", "").strip()
     password = form.get("password", "").strip()
 
-    logger.info(f"Login attempt: username='{username}'")
-    logger.info(f"Expected: username='{settings.username}'")
-
     if username != settings.username or password != settings.password:
-        return render_template(
-            "login.html",
-            request=request,
-            error="Invalid credentials"
-        )
+        return render_template("login.html", request=request, error="Invalid credentials")
 
     set_session_cookie(response, username)
     return RedirectResponse(url="/", status_code=303)
@@ -137,12 +118,10 @@ async def logout(request: Request, response: Response):
     clear_session_cookie(response)
     return RedirectResponse(url="/login", status_code=303)
 
-# ---------- Dashboard ----------
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     return render_template("dashboard.html", request=request)
 
-# ---------- Partial for control panel ----------
 @app.get("/partials/control", response_class=HTMLResponse)
 async def control_partial(request: Request):
     stats = bot.get_stats()
@@ -154,7 +133,6 @@ async def control_partial(request: Request):
         config=settings,
     )
 
-# ---------- API endpoints ----------
 @app.post("/api/connect", response_class=HTMLResponse)
 async def connect(request: Request):
     await bot.connect()
@@ -197,7 +175,6 @@ async def stop_trading(request: Request):
 async def status():
     return bot.get_stats()
 
-# ---------- WebSocket ----------
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -209,7 +186,6 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
 
-# ---------- Lifespan ----------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
