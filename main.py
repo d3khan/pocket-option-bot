@@ -27,10 +27,12 @@ bot = TradingBot(client)
 
 app = FastAPI(title="Pocket Bot Simple")
 
-# ---------- FIX: Convert Path to string explicitly ----------
+# ---------- Templates (with cache disabled) ----------
 TEMPLATES_DIR = str(Path(__file__).parent / "templates")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 templates.env.filters["currency"] = lambda v: f"${v:.2f}"
+# Disable the cache to avoid the unhashable type error
+templates.env.cache = {}
 
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
