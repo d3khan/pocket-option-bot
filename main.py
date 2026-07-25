@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
+from jinja2 import Environment, FileSystemLoader  # <-- add this
 
 from config import settings
 from client import POClient
@@ -27,13 +28,21 @@ bot = TradingBot(client)
 
 app = FastAPI(title="Pocket Bot Simple")
 
-# ---------- Templates (with cache disabled) ----------
+# ---------- Templates (with cache fully disabled) ----------
 TEMPLATES_DIR = str(Path(__file__).parent / "templates")
-templates = Jinja2Templates(directory=TEMPLATES_DIR)
-templates.env.filters["currency"] = lambda v: f"${v:.2f}"
-# Disable the cache to avoid the unhashable type error
-templates.env.cache = {}
+# Create a Jinja2 environment with cache_size=0 (no caching)
+jinja_env = Environment(
+    loader=FileSystemLoader(TEMPLATES_DIR),
+    cache_size=0,  # <-- disables caching entirely
+    autoescape=True,
+)
+# Add custom filter
+jinja_env.filters["currency"] = lambda v: f"${v:.2f}"
 
+# Pass the custom environment to Jinja2Templates
+templates = Jinja2Templates(env=jinja_env)
+
+# Mount static files
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 # ---------- Auto-connect on startup ----------
