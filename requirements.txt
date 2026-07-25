@@ -1,6 +1,5 @@
 fastapi
 uvicorn
-python-socketio
-jinja2
-binaryoptionstoolsv2
-python-dotenv
+pydantic-settings
+BinaryOptionsToolsV2
+aiosqlite
