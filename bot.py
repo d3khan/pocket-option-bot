@@ -167,7 +167,6 @@ class TradingBot:
         logger.info("Trading stopped")
 
     async def _trade_loop(self):
-        last_signal_time = None
         while self._running:
             try:
                 if self.current_candle and "time" in self.current_candle:
@@ -175,15 +174,15 @@ class TradingBot:
                         candle_start = datetime.fromtimestamp(self.current_candle["time"], tz=timezone.utc)
                         now = datetime.now(timezone.utc)
                         seconds_into = (now - candle_start).total_seconds()
-                        if 30 <= seconds_into < 31 and (last_signal_time is None or now > last_signal_time):
-                            last_signal_time = now
+                        # Trade at 30-second mark of every candle (no last_signal_time guard)
+                        if 30 <= seconds_into < 31:
                             logger.info(f"Signal triggered at {seconds_into:.1f}s for {self._current_asset}")
                             await self._on_signal(self.current_candle)
                     except Exception as e:
                         logger.error(f"Error processing candle time: {e}")
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(0.5)
                         continue
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)  # Check more frequently (twice per second)
             except asyncio.CancelledError:
                 break
             except Exception as e:
