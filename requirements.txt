@@ -5,3 +5,4 @@ BinaryOptionsToolsV2
 aiosqlite
 itsdangerous
 jinja2
+python-multipart
