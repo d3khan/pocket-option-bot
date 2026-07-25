@@ -7,10 +7,9 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
-from jinja2 import Environment, FileSystemLoader  # <-- add this
+from jinja2 import Environment, FileSystemLoader, Template
 
 from config import settings
 from client import POClient
@@ -28,21 +27,21 @@ bot = TradingBot(client)
 
 app = FastAPI(title="Pocket Bot Simple")
 
-# ---------- Templates (with cache fully disabled) ----------
+# ---------- Templates (custom environment) ----------
 TEMPLATES_DIR = str(Path(__file__).parent / "templates")
-# Create a Jinja2 environment with cache_size=0 (no caching)
 jinja_env = Environment(
     loader=FileSystemLoader(TEMPLATES_DIR),
-    cache_size=0,  # <-- disables caching entirely
+    cache_size=0,
     autoescape=True,
 )
-# Add custom filter
 jinja_env.filters["currency"] = lambda v: f"${v:.2f}"
 
-# Pass the custom environment to Jinja2Templates
-templates = Jinja2Templates(env=jinja_env)
+# Helper to render template and return HTMLResponse
+def render_template(template_name: str, context: dict) -> HTMLResponse:
+    template = jinja_env.get_template(template_name)
+    content = template.render(**context)
+    return HTMLResponse(content)
 
-# Mount static files
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 # ---------- Auto-connect on startup ----------
@@ -111,7 +110,7 @@ app.add_middleware(AuthMiddleware)
 # ---------- Routes ----------
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+    return render_template("login.html", {"request": request})
 
 @app.post("/login")
 async def login(request: Request, response: Response):
@@ -123,10 +122,7 @@ async def login(request: Request, response: Response):
     logger.info(f"Expected: username='{settings.username}', password='{settings.password}'")
 
     if username != settings.username or password != settings.password:
-        return templates.TemplateResponse(
-            "login.html",
-            {"request": request, "error": "Invalid credentials"}
-        )
+        return render_template("login.html", {"request": request, "error": "Invalid credentials"})
 
     set_session_cookie(response, username)
     return RedirectResponse(url="/", status_code=303)
@@ -139,13 +135,13 @@ async def logout(request: Request, response: Response):
 # ---------- Dashboard ----------
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    return render_template("dashboard.html", {"request": request})
 
 # ---------- Partial for control panel ----------
 @app.get("/partials/control", response_class=HTMLResponse)
 async def control_partial(request: Request):
     stats = bot.get_stats()
-    return templates.TemplateResponse("partials/control.html", {
+    return render_template("partials/control.html", {
         "request": request,
         "running": stats.get("running", False),
         "connected": stats.get("connected", False),
@@ -157,7 +153,7 @@ async def control_partial(request: Request):
 async def connect(request: Request):
     await bot.connect()
     stats = bot.get_stats()
-    return templates.TemplateResponse("partials/control.html", {
+    return render_template("partials/control.html", {
         "request": request,
         "running": stats.get("running", False),
         "connected": stats.get("connected", False),
@@ -169,7 +165,7 @@ async def start_trading(request: Request):
     if bot._connected and not bot._running:
         await bot.start_trading()
     stats = bot.get_stats()
-    return templates.TemplateResponse("partials/control.html", {
+    return render_template("partials/control.html", {
         "request": request,
         "running": stats.get("running", False),
         "connected": stats.get("connected", False),
@@ -181,7 +177,7 @@ async def stop_trading(request: Request):
     if bot._running:
         await bot.stop_trading()
     stats = bot.get_stats()
-    return templates.TemplateResponse("partials/control.html", {
+    return render_template("partials/control.html", {
         "request": request,
         "running": stats.get("running", False),
         "connected": stats.get("connected", False),
