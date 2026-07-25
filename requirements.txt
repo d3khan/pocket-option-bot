@@ -4,3 +4,4 @@ pydantic-settings
 BinaryOptionsToolsV2
 aiosqlite
 itsdangerous
+jinja2
