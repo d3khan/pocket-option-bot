@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     max_daily_loss: float = 50.0
     username: str = "d3khan04"
     password: str = "fake_smile02"
-    secret_key: str = "super-secret-key-change-me"
+    secret_key: str = "0BVMBWw3Ry8qMpk5nsbTtGWsc17-6fShGqslKtgt78I="
     db_path: str = "data/bot.db"
     allowed_assets: List[str] = [
         "EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "AUDUSD_otc",

@@ -2,10 +2,14 @@ services:
   - type: web
     name: pocket-bot
     runtime: python
+    repo: https://github.com/d3khan/pocket-option-bot
+    branch: simple  # Specify the branch to deploy
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PO_SSID
-        sync: false  # you'll set this manually in Render dashboard
+        sync: false # You will set this manually in the Render dashboard
+      - key: SECRET_KEY
+        generateValue: true # Render can generate a secure secret for you
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: 3.13.13
