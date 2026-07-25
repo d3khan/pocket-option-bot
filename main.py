@@ -89,7 +89,7 @@ async def startup_event():
 # ---------- Auth middleware ----------
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path.startswith(("/login", "/static", "/favicon.ico")):
+        if request.url.path.startswith(("/login", "/static", "/favicon.ico", "/ws")):
             return await call_next(request)
 
         username = get_session(request)
