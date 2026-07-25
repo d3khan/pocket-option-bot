@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
+from collections import deque
 
 from client import POClient
 from config import settings
@@ -15,9 +16,9 @@ class TradingBot:
         self._task: Optional[asyncio.Task] = None
         self._current_asset: Optional[str] = None
         self._eligible_assets: list = []
-        self._recent_trades = []
+        self._recent_trades = deque(maxlen=10)  # track last 10 assets
 
-        # Risk state
+        # Risk state (martingale)
         self.stake = settings.base_stake
         self.consecutive_losses = 0
         self.daily_pnl = 0.0
@@ -87,40 +88,62 @@ class TradingBot:
         logger.info(f"Eligible assets: {len(self._eligible_assets)}")
 
     async def _switch_asset(self):
-        traded = [t["asset"] for t in self._recent_trades[-10:]]
-        chosen = None
-        for a in self._eligible_assets:
-            if a["symbol"] not in traded:
-                chosen = a
-                break
-        if chosen is None and self._eligible_assets:
-            chosen = self._eligible_assets[0]
-
-        if not chosen:
+        if not self._eligible_assets:
             return
 
+        # Pick the highest payout asset not in recent trades
+        for a in self._eligible_assets:
+            if a["symbol"] not in self._recent_trades:
+                chosen = a
+                break
+        else:
+            chosen = self._eligible_assets[0]
+
         if self._current_asset:
-            await self.client.unsubscribe(self._current_asset)
+            try:
+                await self.client.unsubscribe(self._current_asset)
+            except Exception as e:
+                logger.warning(f"Unsubscribe error: {e}")
 
         self._current_asset = chosen["symbol"]
+        self.current_candle = {}  # Clear old candle data
+
         asyncio.create_task(self.client.subscribe_candles(self._current_asset, self._on_candle))
         logger.info(f"Switched to asset: {self._current_asset}")
 
     async def _on_candle(self, candle: Dict):
-        # Ensure candle has a proper timestamp
-        if "time" in candle:
-            # If it's a datetime object, convert to timestamp
-            if isinstance(candle["time"], datetime):
-                candle["time"] = candle["time"].timestamp()
-            elif isinstance(candle["time"], str):
-                try:
-                    dt = datetime.fromisoformat(candle["time"].replace("Z", "+00:00"))
-                    candle["time"] = dt.timestamp()
-                except:
-                    logger.warning(f"Could not parse candle time: {candle['time']}")
+        # Ignore candles that don't match the current asset
+        if candle.get("asset") != self._current_asset:
+            return
+
+        # Normalize time field to a timestamp (float)
+        try:
+            if "time" in candle:
+                t = candle["time"]
+                if isinstance(t, datetime):
+                    candle["time"] = t.timestamp()
+                elif isinstance(t, str):
+                    try:
+                        dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
+                        candle["time"] = dt.timestamp()
+                    except ValueError:
+                        try:
+                            dt = datetime.strptime(t, "%Y-%m-%d %H:%M:%S")
+                            dt = dt.replace(tzinfo=timezone.utc)
+                            candle["time"] = dt.timestamp()
+                        except ValueError:
+                            logger.warning(f"Unrecognized time format: {t}")
+                            candle["time"] = datetime.now(timezone.utc).timestamp()
+                elif isinstance(t, (int, float)):
+                    pass
+                else:
                     candle["time"] = datetime.now(timezone.utc).timestamp()
-        else:
+            else:
+                candle["time"] = datetime.now(timezone.utc).timestamp()
+        except Exception as e:
+            logger.error(f"Error processing candle time: {e}")
             candle["time"] = datetime.now(timezone.utc).timestamp()
+
         self.current_candle = candle
         logger.debug(f"Candle updated: {candle.get('asset')} close={candle.get('close')}")
 
@@ -152,26 +175,15 @@ class TradingBot:
             try:
                 if self.current_candle and "time" in self.current_candle:
                     try:
-                        candle_time = self.current_candle["time"]
-                        # Convert to datetime if it's a timestamp
-                        if isinstance(candle_time, (int, float)):
-                            candle_start = datetime.fromtimestamp(candle_time, tz=timezone.utc)
-                        else:
-                            # If it's already a datetime, use it directly
-                            candle_start = candle_time
-                            if candle_start.tzinfo is None:
-                                candle_start = candle_start.replace(tzinfo=timezone.utc)
-
+                        candle_start = datetime.fromtimestamp(self.current_candle["time"], tz=timezone.utc)
                         now = datetime.now(timezone.utc)
                         seconds_into = (now - candle_start).total_seconds()
-                        # Trade at 30 seconds into the candle
                         if 30 <= seconds_into < 31 and (last_signal_time is None or now > last_signal_time):
                             last_signal_time = now
                             logger.info(f"Signal triggered at {seconds_into:.1f}s for {self._current_asset}")
                             await self._on_signal(self.current_candle)
                     except Exception as e:
                         logger.error(f"Error processing candle time: {e}")
-                        # Skip this iteration
                         await asyncio.sleep(1)
                         continue
                 await asyncio.sleep(1)
@@ -184,7 +196,7 @@ class TradingBot:
     async def _on_signal(self, candle: Dict):
         if not self._running:
             return
-        direction = "CALL" if candle["close"] > candle["open"] else "PUT"
+        direction = "PUT" if candle["close"] > candle["open"] else "CALL"
         stake = self.stake
         duration = settings.trade_duration
 
@@ -197,7 +209,10 @@ class TradingBot:
         if result:
             trade_id = result.get("id")
             win = result.get("result") == "win"
-            profit = result.get("profit", 0.0)
+            try:
+                profit = float(result.get("profit", 0.0))
+            except (ValueError, TypeError):
+                profit = 0.0
 
             trade = {
                 "id": trade_id,
@@ -215,19 +230,24 @@ class TradingBot:
             self.total_pnl += trade["pnl"]
             self.daily_pnl += trade["pnl"]
 
+            # Record this asset as recently traded
+            self._recent_trades.append(self._current_asset)
+
+            # --- Martingale logic ---
             if win:
                 self.wins += 1
                 self.stake = settings.base_stake
                 self.consecutive_losses = 0
+                # Switch to a new asset after a win
                 await self._switch_asset()
             else:
                 self.losses += 1
                 self.consecutive_losses += 1
                 self.stake = min(self.stake * settings.multiplier, settings.max_stake)
                 if self.consecutive_losses >= settings.max_consecutive_losses or self.daily_pnl <= -settings.max_daily_loss:
-                    logger.warning("Stop condition reached, stopping trading")
+                    logger.warning(f"Stop condition reached: losses={self.consecutive_losses}, daily_pnl={self.daily_pnl:.2f}")
                     await self.stop_trading()
-            logger.info(f"Trade {trade['result']}: {direction} {self._current_asset} {stake} P&L: {trade['pnl']:.2f}")
+            logger.info(f"Trade {trade['result']}: {direction} {self._current_asset} {stake:.2f} P&L: {trade['pnl']:.2f}")
         else:
             logger.error("Trade failed – no result")
 
