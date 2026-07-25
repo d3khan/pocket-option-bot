@@ -91,6 +91,7 @@ class TradingBot:
         if not self._eligible_assets:
             return
 
+        # Pick the highest payout asset not in recent trades
         for a in self._eligible_assets:
             if a["symbol"] not in self._recent_trades:
                 chosen = a
@@ -105,7 +106,8 @@ class TradingBot:
                 logger.warning(f"Unsubscribe error: {e}")
 
         self._current_asset = chosen["symbol"]
-        self.current_candle = {}
+        self.current_candle = {}  # Clear old candle data
+
         asyncio.create_task(self.client.subscribe_candles(self._current_asset, self._on_candle))
         logger.info(f"Switched to asset: {self._current_asset}")
 
@@ -191,7 +193,7 @@ class TradingBot:
     async def _on_signal(self, candle: Dict):
         if not self._running:
             return
-        direction = "PUT" if candle["close"] > candle["open"] else "CALL"
+        direction = "CALL" if candle["close"] > candle["open"] else "PUT"
         stake = self.stake
         duration = settings.trade_duration
 
@@ -232,16 +234,17 @@ class TradingBot:
                 self.wins += 1
                 self.stake = settings.base_stake
                 self.consecutive_losses = 0
-                
             else:
                 self.losses += 1
                 self.consecutive_losses += 1
                 self.stake = min(self.stake * settings.multiplier, settings.max_stake)
-                
-                await self._switch_asset()
                 if self.consecutive_losses >= settings.max_consecutive_losses or self.daily_pnl <= -settings.max_daily_loss:
                     logger.warning(f"Stop condition reached: losses={self.consecutive_losses}, daily_pnl={self.daily_pnl:.2f}")
                     await self.stop_trading()
+
+            # --- SWITCH ASSET AFTER EVERY TRADE ---
+            await self._switch_asset()
+
             logger.info(f"Trade {trade['result']}: {direction} {self._current_asset} {stake:.2f} P&L: {trade['pnl']:.2f}")
         else:
             logger.error("Trade failed – no result")
