@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,6 @@ from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from jinja2 import Environment, FileSystemLoader
 
 from config import settings
@@ -44,51 +44,55 @@ def render_template(name: str, **context):
 # Static files
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
-# ---------- Auto-connect ----------
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(bot.connect())
-
-# ---------- Session cookie (client‑side signed) ----------
+# ---------- Server-side session store ----------
+sessions = {}  # token -> {"username": str, "expires": datetime}
 SESSION_COOKIE = "session"
 SESSION_EXPIRE_DAYS = 1
-serializer = URLSafeTimedSerializer(settings.secret_key)
 
-def create_signed_session(username: str) -> str:
-    return serializer.dumps({"username": username})
+def create_session(username: str) -> str:
+    token = settings.secret_key
+    expires = datetime.now(timezone.utc) + timedelta(days=SESSION_EXPIRE_DAYS)
+    sessions[token] = {"username": username, "expires": expires}
+    return token
 
-def get_session_data(request: Request):
+def get_session(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
-    try:
-        data = serializer.loads(token, max_age=SESSION_EXPIRE_DAYS * 24 * 60 * 60)
-        return data.get("username")
-    except (SignatureExpired, BadSignature):
+    session = sessions.get(token)
+    if not session:
         return None
+    if session["expires"] < datetime.now(timezone.utc):
+        del sessions[token]  # clean up expired
+        return None
+    return session["username"]
 
-def set_session_cookie(response: Response, username: str):
-    signed = create_signed_session(username)
+def set_session_cookie(response: Response, token: str):
     response.set_cookie(
         key=SESSION_COOKIE,
-        value=signed,
+        value=token,
         httponly=True,
         max_age=SESSION_EXPIRE_DAYS * 24 * 60 * 60,
         samesite="lax",
         path="/",
-        secure=False,          # Works on both HTTP and HTTPS
+        secure=False,        # Works on HTTP and HTTPS
     )
 
 def clear_session_cookie(response: Response):
     response.delete_cookie(SESSION_COOKIE, path="/")
 
-# ---------- Auth Middleware ----------
+# ---------- Auto-connect ----------
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(bot.connect())
+
+# ---------- Auth middleware ----------
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith(("/login", "/static", "/favicon.ico")):
             return await call_next(request)
 
-        username = get_session_data(request)
+        username = get_session(request)
         if not username:
             return RedirectResponse("/login", status_code=303)
 
@@ -110,11 +114,16 @@ async def login(request: Request, response: Response):
     if username != settings.username or password != settings.password:
         return render_template("login.html", request=request, error="Invalid credentials")
 
-    set_session_cookie(response, username)
-    return RedirectResponse(url="/", status_code=303)
+    resp = RedirectResponse(url="/", status_code=303)
+    token = create_session(username)
+    set_session_cookie(resp, token)
+    return resp
 
 @app.post("/logout")
 async def logout(request: Request, response: Response):
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        sessions.pop(token, None)
     clear_session_cookie(response)
     return RedirectResponse(url="/login", status_code=303)
 
@@ -175,6 +184,7 @@ async def stop_trading(request: Request):
 async def status():
     return bot.get_stats()
 
+# ---------- WebSocket ----------
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -186,6 +196,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
 
+# ---------- Lifespan ----------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
