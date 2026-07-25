@@ -246,6 +246,8 @@ class TradingBot:
                 self.stake = min(self.stake * settings.multiplier, settings.max_stake)
                 if self.consecutive_losses >= settings.max_consecutive_losses or self.daily_pnl <= -settings.max_daily_loss:
                     logger.warning(f"Stop condition reached: losses={self.consecutive_losses}, daily_pnl={self.daily_pnl:.2f}")
+                    self.stake = settings.base_stake
+                    self.consecutive_losses = 0
                     await self.stop_trading()
 
             # --- SWITCH ASSET AFTER EVERY TRADE ---
