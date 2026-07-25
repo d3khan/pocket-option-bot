@@ -34,7 +34,6 @@ app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), na
 # ---------- Auto-connect on startup ----------
 @app.on_event("startup")
 async def startup_event():
-    # Try to connect, but don't block startup if it fails
     asyncio.create_task(bot.connect())
 
 # ---------- Session management ----------
@@ -123,7 +122,7 @@ async def dashboard(request: Request):
     return templates.TemplateResponse("dashboard.html", {"request": request})
 
 # ---------- Partial for control panel ----------
-@app.get("/partials/control")
+@app.get("/partials/control", response_class=HTMLResponse)
 async def control_partial(request: Request):
     stats = bot.get_stats()
     return templates.TemplateResponse("partials/control.html", {
@@ -133,28 +132,41 @@ async def control_partial(request: Request):
         "config": settings,
     })
 
-# ---------- API endpoints ----------
-@app.post("/api/connect")
-async def connect():
-    if await bot.connect():
-        return {"status": "connected"}
-    return {"status": "failed"}
+# ---------- API endpoints – return control partial after action ----------
+@app.post("/api/connect", response_class=HTMLResponse)
+async def connect(request: Request):
+    await bot.connect()
+    stats = bot.get_stats()
+    return templates.TemplateResponse("partials/control.html", {
+        "request": request,
+        "running": stats.get("running", False),
+        "connected": stats.get("connected", False),
+        "config": settings,
+    })
 
-@app.post("/api/start")
-async def start_trading():
-    if not bot._connected:
-        return {"status": "not connected"}
-    if bot._running:
-        return {"status": "already running"}
-    await bot.start_trading()
-    return {"status": "started"}
+@app.post("/api/start", response_class=HTMLResponse)
+async def start_trading(request: Request):
+    if bot._connected and not bot._running:
+        await bot.start_trading()
+    stats = bot.get_stats()
+    return templates.TemplateResponse("partials/control.html", {
+        "request": request,
+        "running": stats.get("running", False),
+        "connected": stats.get("connected", False),
+        "config": settings,
+    })
 
-@app.post("/api/stop")
-async def stop_trading():
+@app.post("/api/stop", response_class=HTMLResponse)
+async def stop_trading(request: Request):
     if bot._running:
         await bot.stop_trading()
-        return {"status": "stopped"}
-    return {"status": "not running"}
+    stats = bot.get_stats()
+    return templates.TemplateResponse("partials/control.html", {
+        "request": request,
+        "running": stats.get("running", False),
+        "connected": stats.get("connected", False),
+        "config": settings,
+    })
 
 @app.get("/api/status")
 async def status():

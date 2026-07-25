@@ -1,9 +1,4 @@
 <div class="stats-grid">
-    <div class="stat-card"><span>Balance</span><span>{{ stats.balance | currency }}</span></div>
-    <div class="stat-card"><span>Session P&L</span><span>{{ stats.total_pnl | currency }}</span></div>
-    <div class="stat-card"><span>Daily P&L</span><span>{{ stats.daily_pnl | currency }}</span></div>
-    <div class="stat-card"><span>Win Rate</span><span>{{ stats.win_rate }}%</span></div>
-    <div class="stat-card"><span>Current Stake</span><span>{{ stats.current_stake | currency }}</span></div>
-    <div class="stat-card"><span>Consecutive Losses</span><span>{{ stats.consecutive_losses }}</span></div>
-    <div class="stat-card"><span>Active Asset</span><span>{{ stats.current_asset or "None" }}</span></div>
+    <div class="stat-card"><span>Balance: </span><span>{{ stats.balance | currency }}</span></div>
+    <div class="stat-card"><span>Asset: </span><span>{{ stats.current_asset or "None" }}</span></div>
 </div>

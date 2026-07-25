@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     allowed_assets: List[str] = [
         "EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "AUDUSD_otc",
         "USDCAD_otc", "NZDUSD_otc", "EURJPY_otc", "GBPJPY_otc",
-        "XAUUSD_otc", "BTCUSD_otc", "ETHUSD_otc", "DOGE_otc"
+        "AUDCAD_otc", "AEDCNY_otc", "ETHUSD_otc", "DOGE_otc"
     ]
 
     model_config = ConfigDict(

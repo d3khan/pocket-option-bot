@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
 from client import POClient
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class TradingBot:
     def __init__(self, client: POClient):
         self.client = client
-        self._running = False          # trading loop active
+        self._running = False
         self._task: Optional[asyncio.Task] = None
         self._current_asset: Optional[str] = None
         self._eligible_assets: list = []
@@ -23,31 +23,28 @@ class TradingBot:
         self.daily_pnl = 0.0
         self._last_day = datetime.now(timezone.utc).date()
 
-        # Stats for UI
+        # Stats
         self.balance = 0.0
         self.total_pnl = 0.0
         self.wins = 0
         self.losses = 0
         self.trade_history = []
 
-        # Candle display
+        # Candle
         self.current_candle: Dict = {}
 
-        # Connection and data update
+        # Connection
         self._connected = False
         self._data_task: Optional[asyncio.Task] = None
-        self._update_interval = 3  # seconds
+        self._update_interval = 3
 
-    # ---------- Connection Management ----------
+    # ---------- Connection ----------
     async def connect(self) -> bool:
-        """Establish connection and start data updates."""
         if self._connected:
             return True
         if await self.client.connect():
             self._connected = True
-            # Start background data update loop (balance, assets, candles)
             self._data_task = asyncio.create_task(self._data_update_loop())
-            # Initial scan for assets
             await self._scan_assets()
             if self._eligible_assets:
                 await self._switch_asset()
@@ -56,7 +53,6 @@ class TradingBot:
         return False
 
     async def disconnect(self):
-        """Disconnect and stop all loops."""
         self._connected = False
         self._running = False
         if self._task:
@@ -67,11 +63,9 @@ class TradingBot:
         logger.info("Disconnected")
 
     async def _data_update_loop(self):
-        """Continuous loop to update balance and other stats."""
         while self._connected:
             try:
                 self.balance = await self.client.get_balance()
-                # Optionally update other data
                 await asyncio.sleep(self._update_interval)
             except asyncio.CancelledError:
                 break
@@ -113,11 +107,25 @@ class TradingBot:
         logger.info(f"Switched to asset: {self._current_asset}")
 
     async def _on_candle(self, candle: Dict):
+        # Ensure candle has a proper timestamp
+        if "time" in candle:
+            # If it's a datetime object, convert to timestamp
+            if isinstance(candle["time"], datetime):
+                candle["time"] = candle["time"].timestamp()
+            elif isinstance(candle["time"], str):
+                try:
+                    dt = datetime.fromisoformat(candle["time"].replace("Z", "+00:00"))
+                    candle["time"] = dt.timestamp()
+                except:
+                    logger.warning(f"Could not parse candle time: {candle['time']}")
+                    candle["time"] = datetime.now(timezone.utc).timestamp()
+        else:
+            candle["time"] = datetime.now(timezone.utc).timestamp()
         self.current_candle = candle
+        logger.debug(f"Candle updated: {candle.get('asset')} close={candle.get('close')}")
 
-    # ---------- Trading Control ----------
+    # ---------- Trading ----------
     async def start_trading(self):
-        """Start the trading loop (signals -> trades)."""
         if not self._connected:
             logger.error("Cannot start trading: not connected")
             return
@@ -128,7 +136,6 @@ class TradingBot:
         logger.info("Trading started")
 
     async def stop_trading(self):
-        """Stop the trading loop (but keep data updates)."""
         self._running = False
         if self._task:
             self._task.cancel()
@@ -140,17 +147,33 @@ class TradingBot:
         logger.info("Trading stopped")
 
     async def _trade_loop(self):
-        """Main trading loop: scans for signals and executes trades."""
         last_signal_time = None
         while self._running:
             try:
-                if self.current_candle:
-                    now = datetime.now(timezone.utc)
-                    candle_start = datetime.fromtimestamp(self.current_candle["time"], tz=timezone.utc)
-                    seconds_into = (now - candle_start).total_seconds()
-                    if 30 <= seconds_into < 31 and (last_signal_time is None or now > last_signal_time):
-                        last_signal_time = now
-                        await self._on_signal(self.current_candle)
+                if self.current_candle and "time" in self.current_candle:
+                    try:
+                        candle_time = self.current_candle["time"]
+                        # Convert to datetime if it's a timestamp
+                        if isinstance(candle_time, (int, float)):
+                            candle_start = datetime.fromtimestamp(candle_time, tz=timezone.utc)
+                        else:
+                            # If it's already a datetime, use it directly
+                            candle_start = candle_time
+                            if candle_start.tzinfo is None:
+                                candle_start = candle_start.replace(tzinfo=timezone.utc)
+
+                        now = datetime.now(timezone.utc)
+                        seconds_into = (now - candle_start).total_seconds()
+                        # Trade at 30 seconds into the candle
+                        if 30 <= seconds_into < 31 and (last_signal_time is None or now > last_signal_time):
+                            last_signal_time = now
+                            logger.info(f"Signal triggered at {seconds_into:.1f}s for {self._current_asset}")
+                            await self._on_signal(self.current_candle)
+                    except Exception as e:
+                        logger.error(f"Error processing candle time: {e}")
+                        # Skip this iteration
+                        await asyncio.sleep(1)
+                        continue
                 await asyncio.sleep(1)
             except asyncio.CancelledError:
                 break
@@ -164,42 +187,49 @@ class TradingBot:
         direction = "CALL" if candle["close"] > candle["open"] else "PUT"
         stake = self.stake
         duration = settings.trade_duration
-        trade_id = await self.client.place_trade(self._current_asset, direction, stake, duration)
-        if trade_id:
+
+        logger.info(f"Trade signal: {direction} on {self._current_asset} at {candle['close']}")
+
+        # Place trade and wait for result
+        result = await self.client.place_trade(
+            self._current_asset, direction, stake, duration, check_win=True
+        )
+        if result:
+            trade_id = result.get("id")
+            win = result.get("result") == "win"
+            profit = result.get("profit", 0.0)
+
             trade = {
                 "id": trade_id,
                 "asset": self._current_asset,
                 "direction": direction,
                 "stake": stake,
                 "open_time": datetime.now(timezone.utc).isoformat(),
-                "result": "Pending",
-                "pnl": None,
+                "result": "WIN" if win else "LOSS",
+                "pnl": profit if win else -abs(profit),
             }
             self.trade_history.insert(0, trade)
             if len(self.trade_history) > 100:
                 self.trade_history.pop()
-            logger.info(f"Trade placed: {direction} {self._current_asset} {stake}")
 
-            result = await self.client.check_trade_result(trade_id)
-            if result:
-                win = result.get("result") == "win"
-                profit = result.get("profit", 0.0)
-                trade["result"] = "WIN" if win else "LOSS"
-                trade["pnl"] = profit if win else -abs(profit)
-                self.total_pnl += trade["pnl"]
-                self.daily_pnl += trade["pnl"]
-                if win:
-                    self.wins += 1
-                    self.stake = settings.base_stake
-                    self.consecutive_losses = 0
-                    await self._switch_asset()
-                else:
-                    self.losses += 1
-                    self.consecutive_losses += 1
-                    self.stake = min(self.stake * settings.multiplier, settings.max_stake)
-                    if self.consecutive_losses >= settings.max_consecutive_losses or self.daily_pnl <= -settings.max_daily_loss:
-                        logger.warning("Stop condition reached, stopping trading")
-                        await self.stop_trading()
+            self.total_pnl += trade["pnl"]
+            self.daily_pnl += trade["pnl"]
+
+            if win:
+                self.wins += 1
+                self.stake = settings.base_stake
+                self.consecutive_losses = 0
+                await self._switch_asset()
+            else:
+                self.losses += 1
+                self.consecutive_losses += 1
+                self.stake = min(self.stake * settings.multiplier, settings.max_stake)
+                if self.consecutive_losses >= settings.max_consecutive_losses or self.daily_pnl <= -settings.max_daily_loss:
+                    logger.warning("Stop condition reached, stopping trading")
+                    await self.stop_trading()
+            logger.info(f"Trade {trade['result']}: {direction} {self._current_asset} {stake} P&L: {trade['pnl']:.2f}")
+        else:
+            logger.error("Trade failed – no result")
 
     def get_stats(self) -> Dict:
         total = self.wins + self.losses

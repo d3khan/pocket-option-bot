@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Optional, Dict, Any
+from datetime import timedelta
 
 from BinaryOptionsToolsV2 import PocketOptionAsync
 
@@ -61,16 +62,19 @@ class POClient:
         except Exception:
             return 0
 
-    async def place_trade(self, asset: str, direction: str, amount: float, duration: int) -> Optional[str]:
+    async def place_trade(self, asset: str, direction: str, amount: float, duration: int, check_win: bool = False) -> Optional[Dict]:
         if not self.is_connected:
             return None
         direction = direction.lower()
         try:
             if direction == "call":
-                trade_id, _ = await self._client.buy(asset, amount, duration, check_win=False)
+                trade_id, result = await self._client.buy(asset, amount, duration, check_win=check_win)
             else:
-                trade_id, _ = await self._client.sell(asset, amount, duration, check_win=False)
-            return trade_id
+                trade_id, result = await self._client.sell(asset, amount, duration, check_win=check_win)
+            if check_win:
+                return {"id": trade_id, "result": result["result"], "profit": result["profit"]}
+            else:
+                return {"id": trade_id}
         except Exception as e:
             logger.error(f"Trade error: {e}")
             return None
@@ -94,11 +98,11 @@ class POClient:
             return []
 
     async def subscribe_candles(self, asset: str, callback):
-        """Subscribe to real‑time candles and call callback on each."""
         if not self.is_connected:
             return
         try:
-            sub = await self._client.subscribe_symbol_time_aligned(asset, 60)
+            # Use timedelta for interval
+            sub = await self._client.subscribe_symbol_time_aligned(asset, timedelta(seconds=60))
             async for candle in sub:
                 await callback({**candle, "asset": asset})
         except Exception as e:
