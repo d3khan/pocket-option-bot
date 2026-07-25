@@ -125,6 +125,8 @@ async def logout(request: Request, response: Response):
     if token:
         sessions.pop(token, None)
     clear_session_cookie(response)
+    bot.reset_stats()
+    await bot.disconnect()
     return RedirectResponse(url="/login", status_code=303)
 
 @app.get("/", response_class=HTMLResponse)

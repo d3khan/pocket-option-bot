@@ -274,3 +274,18 @@ class TradingBot:
             "connected": self._connected,
             "running": self._running,
         }
+    def reset_stats(self):
+        """Reset all trading statistics to their initial state."""
+        self.stake = settings.base_stake
+        self.consecutive_losses = 0
+        self.daily_pnl = 0.0
+        self.balance = 0.0
+        self.total_pnl = 0.0
+        self.wins = 0
+        self.losses = 0
+        self.trade_history = []
+        self.current_candle = {}
+        self._last_traded_candle_time = None
+        self._recent_trades.clear()
+        self._current_asset = None
+        logger.info("Stats reset")
