@@ -16,7 +16,7 @@ class TradingBot:
         self._task: Optional[asyncio.Task] = None
         self._current_asset: Optional[str] = None
         self._eligible_assets: list = []
-        self._recent_trades = deque(maxlen=10)  # track last 10 assets
+        self._recent_trades = deque(maxlen=10)
 
         # Risk state (martingale)
         self.stake = settings.base_stake
@@ -91,7 +91,6 @@ class TradingBot:
         if not self._eligible_assets:
             return
 
-        # Pick the highest payout asset not in recent trades
         for a in self._eligible_assets:
             if a["symbol"] not in self._recent_trades:
                 chosen = a
@@ -106,17 +105,13 @@ class TradingBot:
                 logger.warning(f"Unsubscribe error: {e}")
 
         self._current_asset = chosen["symbol"]
-        self.current_candle = {}  # Clear old candle data
-
+        self.current_candle = {}
         asyncio.create_task(self.client.subscribe_candles(self._current_asset, self._on_candle))
         logger.info(f"Switched to asset: {self._current_asset}")
 
     async def _on_candle(self, candle: Dict):
-        # Ignore candles that don't match the current asset
         if candle.get("asset") != self._current_asset:
             return
-
-        # Normalize time field to a timestamp (float)
         try:
             if "time" in candle:
                 t = candle["time"]
@@ -202,7 +197,6 @@ class TradingBot:
 
         logger.info(f"Trade signal: {direction} on {self._current_asset} at {candle['close']}")
 
-        # Place trade and wait for result
         result = await self.client.place_trade(
             self._current_asset, direction, stake, duration, check_win=True
         )
@@ -238,12 +232,13 @@ class TradingBot:
                 self.wins += 1
                 self.stake = settings.base_stake
                 self.consecutive_losses = 0
-                # Switch to a new asset after a win
-                await self._switch_asset()
+                
             else:
                 self.losses += 1
                 self.consecutive_losses += 1
                 self.stake = min(self.stake * settings.multiplier, settings.max_stake)
+                
+                await self._switch_asset()
                 if self.consecutive_losses >= settings.max_consecutive_losses or self.daily_pnl <= -settings.max_daily_loss:
                     logger.warning(f"Stop condition reached: losses={self.consecutive_losses}, daily_pnl={self.daily_pnl:.2f}")
                     await self.stop_trading()
