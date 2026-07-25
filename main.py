@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
-from jinja2 import Environment, FileSystemLoader, Template
+from jinja2 import Environment, FileSystemLoader
 
 from config import settings
 from client import POClient
@@ -27,7 +27,7 @@ bot = TradingBot(client)
 
 app = FastAPI(title="Pocket Bot Simple")
 
-# ---------- Templates (custom environment) ----------
+# ---------- Direct Jinja2 Environment (no Starlette wrapper) ----------
 TEMPLATES_DIR = str(Path(__file__).parent / "templates")
 jinja_env = Environment(
     loader=FileSystemLoader(TEMPLATES_DIR),
@@ -36,12 +36,13 @@ jinja_env = Environment(
 )
 jinja_env.filters["currency"] = lambda v: f"${v:.2f}"
 
-# Helper to render template and return HTMLResponse
-def render_template(template_name: str, context: dict) -> HTMLResponse:
-    template = jinja_env.get_template(template_name)
-    content = template.render(**context)
-    return HTMLResponse(content)
+def render_template(name: str, **context):
+    """Render a template and return HTMLResponse."""
+    template = jinja_env.get_template(name)
+    html = template.render(**context)
+    return HTMLResponse(content=html)
 
+# Mount static files
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 # ---------- Auto-connect on startup ----------
@@ -76,15 +77,16 @@ def get_session_data(request: Request):
 
 def set_session_cookie(response: Response, username: str):
     signed = create_signed_session(username)
+    # Render uses HTTPS, so secure=True is required
     response.set_cookie(
         key=SESSION_COOKIE,
         value=signed,
         httponly=True,
         max_age=SESSION_EXPIRE_DAYS * 24 * 60 * 60,
-        samesite="lax",
+        samesite="lax",    # 'lax' works for same-site; 'none' if cross-site needed
         path="/",
-        domain=None,
-        secure=False,
+        secure=True,       # Render uses HTTPS
+        domain=None,       # let the browser decide
     )
     logger.info(f"Session cookie set for {username}")
 
@@ -97,7 +99,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path.startswith(("/login", "/static", "/favicon.ico")):
             return await call_next(request)
 
-        logger.info(f"Auth: path={request.url.path}, cookies={list(request.cookies.keys())}")
         username = get_session_data(request)
         if not username:
             logger.warning("Unauthenticated, redirecting to login")
@@ -110,7 +111,7 @@ app.add_middleware(AuthMiddleware)
 # ---------- Routes ----------
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return render_template("login.html", {"request": request})
+    return render_template("login.html", request=request)
 
 @app.post("/login")
 async def login(request: Request, response: Response):
@@ -118,11 +119,15 @@ async def login(request: Request, response: Response):
     username = form.get("username", "").strip()
     password = form.get("password", "").strip()
 
-    logger.info(f"Login attempt: username='{username}', password='{password}'")
-    logger.info(f"Expected: username='{settings.username}', password='{settings.password}'")
+    logger.info(f"Login attempt: username='{username}'")
+    logger.info(f"Expected: username='{settings.username}'")
 
     if username != settings.username or password != settings.password:
-        return render_template("login.html", {"request": request, "error": "Invalid credentials"})
+        return render_template(
+            "login.html",
+            request=request,
+            error="Invalid credentials"
+        )
 
     set_session_cookie(response, username)
     return RedirectResponse(url="/", status_code=303)
@@ -135,54 +140,58 @@ async def logout(request: Request, response: Response):
 # ---------- Dashboard ----------
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    return render_template("dashboard.html", {"request": request})
+    return render_template("dashboard.html", request=request)
 
 # ---------- Partial for control panel ----------
 @app.get("/partials/control", response_class=HTMLResponse)
 async def control_partial(request: Request):
     stats = bot.get_stats()
-    return render_template("partials/control.html", {
-        "request": request,
-        "running": stats.get("running", False),
-        "connected": stats.get("connected", False),
-        "config": settings,
-    })
+    return render_template(
+        "partials/control.html",
+        request=request,
+        running=stats.get("running", False),
+        connected=stats.get("connected", False),
+        config=settings,
+    )
 
 # ---------- API endpoints ----------
 @app.post("/api/connect", response_class=HTMLResponse)
 async def connect(request: Request):
     await bot.connect()
     stats = bot.get_stats()
-    return render_template("partials/control.html", {
-        "request": request,
-        "running": stats.get("running", False),
-        "connected": stats.get("connected", False),
-        "config": settings,
-    })
+    return render_template(
+        "partials/control.html",
+        request=request,
+        running=stats.get("running", False),
+        connected=stats.get("connected", False),
+        config=settings,
+    )
 
 @app.post("/api/start", response_class=HTMLResponse)
 async def start_trading(request: Request):
     if bot._connected and not bot._running:
         await bot.start_trading()
     stats = bot.get_stats()
-    return render_template("partials/control.html", {
-        "request": request,
-        "running": stats.get("running", False),
-        "connected": stats.get("connected", False),
-        "config": settings,
-    })
+    return render_template(
+        "partials/control.html",
+        request=request,
+        running=stats.get("running", False),
+        connected=stats.get("connected", False),
+        config=settings,
+    )
 
 @app.post("/api/stop", response_class=HTMLResponse)
 async def stop_trading(request: Request):
     if bot._running:
         await bot.stop_trading()
     stats = bot.get_stats()
-    return render_template("partials/control.html", {
-        "request": request,
-        "running": stats.get("running", False),
-        "connected": stats.get("connected", False),
-        "config": settings,
-    })
+    return render_template(
+        "partials/control.html",
+        request=request,
+        running=stats.get("running", False),
+        connected=stats.get("connected", False),
+        config=settings,
+    )
 
 @app.get("/api/status")
 async def status():
