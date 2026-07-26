@@ -199,7 +199,7 @@ class TradingBot:
     async def _on_signal(self, candle: Dict):
         if not self._running:
             return
-        direction = "CALL" if candle["close"] > candle["open"] else "PUT"
+        direction = "PUT" if candle["close"] > candle["open"] else "CALL"
         stake = self.stake
         duration = settings.trade_duration
 
