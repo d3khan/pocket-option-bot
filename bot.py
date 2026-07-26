@@ -52,6 +52,7 @@ class TradingBot:
             await self._scan_assets()
             if self._eligible_assets:
                 await self._switch_asset()
+            asyncio.create_task(self._refresh_assets_loop())
             logger.info("Connected and data updates started")
             return True
         return False
@@ -76,6 +77,13 @@ class TradingBot:
             except Exception as e:
                 logger.error(f"Data update error: {e}")
                 await asyncio.sleep(5)
+
+    async def _refresh_assets_loop(self):
+        """Periodically refresh asset payouts every 1 minute."""
+        while self._connected:
+            await asyncio.sleep(60)  
+            await self._scan_assets()
+            logger.info("Asset payouts refreshed")
 
     # ---------- Asset Management ----------
     async def _scan_assets(self):
