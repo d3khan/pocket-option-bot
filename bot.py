@@ -12,8 +12,8 @@ from client import POClient
 logger = logging.getLogger(__name__)
 
 
-# ---------- Shared score manager ----------
 class ScoreManager:
+    """Tracks scores for all assets and picks the top ones."""
     def __init__(self):
         self.scores: Dict[str, float] = {}
         self.best_asset: Optional[str] = None
@@ -28,111 +28,161 @@ class ScoreManager:
     def get_best(self) -> Optional[str]:
         return self.best_asset
 
+    def get_top_n(self, n: int) -> List[str]:
+        sorted_scores = sorted(self.scores.items(), key=lambda x: x[1], reverse=True)
+        return [asset for asset, _ in sorted_scores[:n]]
 
-# ---------- Worker that subscribes to a subset of assets ----------
-class AssetWorker:
-    def __init__(self, ssid: str, assets: List[str], score_manager: ScoreManager):
-        self.ssid = ssid
-        self.assets = assets
-        self.score_manager = score_manager
-        self.running = False
-        self.client: Optional[PocketOptionAsync] = None
-        self.task: Optional[asyncio.Task] = None
-        self.asset_data: Dict[str, Dict] = {}
 
-    async def start(self):
-        """Start the worker – create client, fetch history, and subscribe."""
-        self.running = True
-        self.client = PocketOptionAsync(ssid=self.ssid)
-        await self.client.connect()
-        await self.client.wait_for_assets(timeout=60)
+class TradingBot:
+    def __init__(self, client: POClient):
+        self.client = client
+        self._running = False
+        self._subscribed_assets: List[str] = []           # currently active 4 assets
+        self._all_assets: List[str] = []                  # all eligible OTC assets
+        self._asset_data: Dict[str, Dict] = {}            # indicators for all assets
+        self._score_manager = ScoreManager()
+        self._subscription_tasks: List[asyncio.Task] = []
+        self._trade_task: Optional[asyncio.Task] = None
+        self._rebalance_task: Optional[asyncio.Task] = None
+        self._trade_counter = 0
 
-        # Initialize data for each asset and pre-fetch 40 candles
-        for asset in self.assets:
-            self.asset_data[asset] = {
-                'prices': deque(maxlen=40),
-                'ema': None,
-                'rsi': None,
-                'ready': False,   # indicator ready flag
-            }
+        # Risk / Martingale
+        self.stake = settings.base_stake
+        self.consecutive_losses = 0
+        self.daily_pnl = 0.0
+        self.total_pnl = 0.0
+        self.wins = 0
+        self.losses = 0
+        self.trade_history = []
+        self._last_day = datetime.now(timezone.utc).date()
+        self.balance = 0.0
+
+    # ---------- Connection & Asset Scanning ----------
+    async def connect(self) -> bool:
+        if await self.client.connect():
+            await self._scan_assets()
+            # Pre‑fetch 20 candles for all assets and calculate initial scores
+            await self._fetch_initial_data()
+            # Subscribe to the top 4 assets
+            await self._subscribe_top_assets()
+            # Start rebalance loop
+            self._rebalance_task = asyncio.create_task(self._rebalance_loop())
+            return True
+        return False
+
+    async def disconnect(self):
+        self._running = False
+        for task in self._subscription_tasks:
+            task.cancel()
+        if self._trade_task:
+            self._trade_task.cancel()
+        if self._rebalance_task:
+            self._rebalance_task.cancel()
+        for asset in self._subscribed_assets:
+            await self.client.unsubscribe(asset)
+        await self.client.disconnect()
+
+    async def _scan_assets(self):
+        assets = await self.client.get_assets()
+        eligible = []
+        for symbol, info in assets.items():
+            if info.get("is_otc") is not True:
+                continue
+            if info.get("is_active") is False:
+                continue
+            payout = info.get("payout", 0)
+            if payout >= settings.min_payout:
+                eligible.append((symbol, payout))
+        eligible.sort(key=lambda x: x[1], reverse=True)
+        self._all_assets = [sym for sym, _ in eligible[:30]]  # keep top 30 for pool
+        logger.info(f"Found {len(self._all_assets)} OTC assets with payout >= {settings.min_payout}%")
+
+    async def _fetch_initial_data(self):
+        """Fetch 20 candles for all assets and compute indicators."""
+        for asset in self._all_assets:
             try:
-                # Fetch 40 candles (60s * 40 = 2400 seconds offset)
-                candles = await self.client.get_candles(asset, period=60, offset=2400)
+                candles = await self.client.get_candles(asset, period=60, offset=1200)  # 20 candles
                 if len(candles) >= 20:
                     closes = [c['close'] for c in candles[-20:]]
-                    self.asset_data[asset]['prices'] = deque(closes, maxlen=40)
-                    self._update_indicators(asset, self.asset_data[asset])
-                    score = self._compute_score(asset, self.asset_data[asset])
-                    await self.score_manager.update_score(asset, score)
-                    self.asset_data[asset]['ready'] = True
-                    logger.info(f"Prefetched {len(closes)} candles for {asset} – indicators ready")
+                    self._asset_data[asset] = {
+                        'prices': deque(closes, maxlen=40),
+                        'ema': None,
+                        'rsi': None,
+                        'last_update': datetime.now(timezone.utc),
+                    }
+                    self._update_indicators(asset, self._asset_data[asset])
+                    score = self._compute_score(asset, self._asset_data[asset])
+                    await self._score_manager.update_score(asset, score)
+                    logger.info(f"Initialized {asset} – score {score:.2f}")
                 else:
-                    # Not enough data yet – will wait for streaming to fill
-                    closes = [c['close'] for c in candles]
-                    self.asset_data[asset]['prices'] = deque(closes, maxlen=40)
-                    logger.warning(f"Only {len(closes)} candles for {asset}, need 20. Waiting for more data...")
+                    logger.warning(f"Only {len(candles)} candles for {asset}, skipping")
             except Exception as e:
-                logger.error(f"Failed to fetch history for {asset}: {e}")
-                # Initialize with empty deque, will fill via streaming
-                self.asset_data[asset]['prices'] = deque(maxlen=40)
+                logger.error(f"Failed to fetch data for {asset}: {e}")
 
-        # Start subscription loop
-        self.task = asyncio.create_task(self._run())
-        logger.info(f"Worker started for {len(self.assets)} assets: {self.assets}")
-
-    async def _run(self):
-        try:
-            tasks = []
-            for asset in self.assets:
-                tasks.append(self._subscribe_asset(asset))
-            await asyncio.gather(*tasks)
-        except asyncio.CancelledError:
-            logger.info(f"Worker cancelled for assets: {self.assets}")
-        except Exception as e:
-            logger.error(f"Worker error: {e}", exc_info=True)
-        finally:
-            self.running = False
-            if self.client:
-                try:
-                    await self.client.shutdown()
-                except Exception:
-                    pass
+    async def _subscribe_top_assets(self):
+        """Subscribe to the top 4 assets by score."""
+        top_assets = self._score_manager.get_top_n(4)
+        if not top_assets:
+            logger.error("No assets with scores, cannot subscribe")
+            return
+        self._subscribed_assets = top_assets
+        for asset in top_assets:
+            task = asyncio.create_task(self._subscribe_asset(asset))
+            self._subscription_tasks.append(task)
+        logger.info(f"Subscribed to top 4 assets: {top_assets}")
 
     async def _subscribe_asset(self, asset: str):
-        """Subscribe to candles for a single asset with retry logic."""
-        retry_count = 0
-        max_retries = 3
-        while self.running and retry_count < max_retries:
-            try:
-                sub = await self.client.subscribe_symbol_time_aligned(asset, timedelta(seconds=60))
-                async for candle in sub:
-                    if not self.running:
-                        break
-                    data = self.asset_data[asset]
+        """Subscribe to a single asset and process its candles."""
+        try:
+            sub = await self.client._client.subscribe_symbol_time_aligned(asset, timedelta(seconds=60))
+            async for candle in sub:
+                if not self._running:
+                    break
+                data = self._asset_data.get(asset)
+                if data:
                     data['prices'].append(candle['close'])
                     self._update_indicators(asset, data)
                     score = self._compute_score(asset, data)
-                    if score > 0:
-                        await self.score_manager.update_score(asset, score)
-                        if not data.get('ready') and len(data['prices']) >= 20:
-                            data['ready'] = True
-                            logger.info(f"Asset {asset} now has enough data for indicators")
-                # If loop exits without cancellation, it means subscription ended
-                if self.running:
-                    logger.warning(f"Subscription for {asset} ended unexpectedly, retrying...")
-                    retry_count += 1
-                    await asyncio.sleep(2)
-            except asyncio.CancelledError:
-                logger.debug(f"Subscription cancelled for {asset}")
-                break
-            except Exception as e:
-                logger.error(f"Subscription error for {asset}: {e}")
-                if self.running:
-                    retry_count += 1
-                    await asyncio.sleep(2)
-        if not self.running:
-            logger.info(f"Subscription for {asset} stopped (worker not running)")
+                    await self._score_manager.update_score(asset, score)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Subscription error for {asset}: {e}")
 
+    # ---------- Rebalance Logic ----------
+    async def _rebalance_loop(self):
+        """Periodically check if we should replace an active asset."""
+        while self._running:
+            await asyncio.sleep(60)  # check every minute
+            if not self._running:
+                break
+            # Get current scores for all assets
+            all_scores = {asset: self._score_manager.scores.get(asset, 0) for asset in self._all_assets}
+            # Get top 4 overall
+            top_assets = sorted(all_scores, key=all_scores.get, reverse=True)[:4]
+            # Compare with currently subscribed assets
+            current_set = set(self._subscribed_assets)
+            new_set = set(top_assets)
+            if current_set != new_set:
+                to_add = new_set - current_set
+                to_remove = current_set - new_set
+                # Unsubscribe removed assets
+                for asset in to_remove:
+                    if asset in self._subscribed_assets:
+                        self._subscribed_assets.remove(asset)
+                        await self.client.unsubscribe(asset)
+                        logger.info(f"Unsubscribed {asset} – dropped from top 4")
+                # Subscribe to new assets
+                for asset in to_add:
+                    if asset not in self._subscribed_assets:
+                        self._subscribed_assets.append(asset)
+                        task = asyncio.create_task(self._subscribe_asset(asset))
+                        self._subscription_tasks.append(task)
+                        logger.info(f"Subscribed {asset} – entered top 4")
+                # Update the score manager's best asset for UI
+                self._score_manager.best_asset = top_assets[0] if top_assets else None
+
+    # ---------- Indicator Helpers ----------
     def _update_indicators(self, asset, data):
         closes = list(data['prices'])
         if len(closes) >= settings.ema_period:
@@ -177,185 +227,44 @@ class AssetWorker:
             rsi_strength = (settings.rsi_oversold - rsi) / settings.rsi_oversold
         return price_diff * 100 + rsi_strength * 50
 
-    async def stop(self):
-        self.running = False
-        if self.task and not self.task.done():
-            self.task.cancel()
-            try:
-                await self.task
-            except asyncio.CancelledError:
-                pass
-        if self.client:
-            try:
-                await self.client.shutdown()
-            except Exception:
-                pass
-
-
-# ---------- TradingBot that manages multiple workers ----------
-class TradingBot:
-    def __init__(self, client: POClient):
-        self.client = client
-        self._running = False
-        self._trade_task: Optional[asyncio.Task] = None
-        self._refresh_task: Optional[asyncio.Task] = None
-        self._score_manager = ScoreManager()
-        self._workers: List[AssetWorker] = []
-        self._all_assets: List[str] = []
-        self._selected_assets: List[str] = []
-        self._trade_counter = 0
-
-        # Risk / Martingale
-        self.stake = settings.base_stake
-        self.consecutive_losses = 0
-        self.daily_pnl = 0.0
-        self.total_pnl = 0.0
-        self.wins = 0
-        self.losses = 0
-        self.trade_history = []
-        self._last_day = datetime.now(timezone.utc).date()
-        self.balance = 0.0
-
-    async def connect(self) -> bool:
-        if await self.client.connect():
-            await self._scan_assets()
-            return True
-        return False
-
-    async def disconnect(self):
-        await self.stop_trading()
-        await self.client.disconnect()
-
-    async def _scan_assets(self):
-        assets = await self.client.get_assets()
-        eligible = []
-        for symbol, info in assets.items():
-            if info.get("is_otc") is not True:
-                continue
-            if info.get("is_active") is False:
-                continue
-            payout = info.get("payout", 0)
-            if payout >= settings.min_payout:
-                eligible.append((symbol, payout))
-        eligible.sort(key=lambda x: x[1], reverse=True)
-        self._all_assets = [sym for sym, _ in eligible]
-        logger.info(f"Found {len(self._all_assets)} OTC assets with payout >= {settings.min_payout}%")
-        return self._all_assets
-
-    async def _refresh_assets_loop(self):
-        while self._running:
-            await asyncio.sleep(60)
-            old_assets = set(self._selected_assets)
-            await self._scan_assets()
-            new_assets = self._all_assets[:len(self._selected_assets)]
-            if set(new_assets) != old_assets:
-                logger.info("Asset list changed, rebalancing workers...")
-                await self._rebalance_workers()
-
-    async def _rebalance_workers(self):
-        await self._stop_workers()
-        await self._start_workers()
-
-    async def _stop_workers(self):
-        for worker in self._workers:
-            await worker.stop()
-        self._workers.clear()
-
-    async def _start_workers(self):
-        if not self._all_assets:
-            await self._scan_assets()
-        if not self._all_assets:
-            logger.error("No OTC assets available.")
-            return False
-
-        max_per_worker = 4
-        num_workers = (len(self._all_assets) + max_per_worker - 1) // max_per_worker
-        num_workers = min(num_workers, 20)
-        if num_workers == 0:
-            num_workers = 1
-
-        assigned = []
-        for i in range(num_workers):
-            start = i * max_per_worker
-            end = min(start + max_per_worker, len(self._all_assets))
-            assets = self._all_assets[start:end]
-            if assets:
-                assigned.append(assets)
-
-        self._selected_assets = [a for sublist in assigned for a in sublist]
-
-        for assets in assigned:
-            try:
-                worker = AssetWorker(settings.ssid, assets, self._score_manager)
-                await worker.start()
-                self._workers.append(worker)
-                logger.info(f"Worker started with {len(assets)} assets: {assets}")
-            except Exception as e:
-                logger.error(f"Failed to start worker: {e}")
-                return False
-
-        logger.info(f"Started {len(self._workers)} workers monitoring {len(self._selected_assets)} assets")
-        return True
-
+    # ---------- Trading ----------
     async def start_trading(self):
-        logger.info("🟢 start_trading() called")
         if self._running:
-            logger.warning("Trading already running")
             return
-
-        if not self._all_assets:
-            logger.info("No assets loaded, scanning...")
-            await self._scan_assets()
-        if not self._all_assets:
-            logger.error("No assets available, cannot start")
+        if not self._subscribed_assets:
+            logger.error("No assets subscribed, cannot trade")
             return
-
-        logger.info("Starting workers...")
-        success = await self._start_workers()
-        if not success or not self._workers:
-            logger.error("No workers started, cannot trade")
-            self._running = False
-            return
-
         self._running = True
-        self._refresh_task = asyncio.create_task(self._refresh_assets_loop())
         self._trade_task = asyncio.create_task(self._trade_loop())
-        logger.info("▶️ Trading started successfully")
+        logger.info("▶️ Trading started")
 
     async def stop_trading(self):
         self._running = False
-        if self._trade_task and not self._trade_task.done():
+        if self._trade_task:
             self._trade_task.cancel()
-        if self._refresh_task and not self._refresh_task.done():
-            self._refresh_task.cancel()
-        await self._stop_workers()
         logger.info("⏹️ Trading stopped")
 
     async def _trade_loop(self):
         while self._running:
             try:
                 now = datetime.now(timezone.utc)
-                if now.second == 0:
-                    if self._trade_counter % 2 == 0:
-                        best = self._score_manager.get_best()
-                        if best:
-                            for worker in self._workers:
-                                if best in worker.asset_data:
-                                    data = worker.asset_data[best]
-                                    if data.get('ema') is not None and data.get('rsi') is not None:
-                                        price = data['prices'][-1]
-                                        ema = data['ema']
-                                        rsi = data['rsi']
-                                        if price > ema and rsi > settings.rsi_overbought:
-                                            direction = "call"
-                                        elif price < ema and rsi < settings.rsi_oversold:
-                                            direction = "put"
-                                        else:
-                                            direction = None
-                                        if direction:
-                                            logger.info(f"🚀 Trading {best} {direction} at :00")
-                                            await self._execute_trade(best, direction)
-                                    break
+                if now.second == 0 and self._trade_counter % 2 == 0:
+                    best = self._score_manager.get_best()
+                    if best and best in self._subscribed_assets:
+                        data = self._asset_data.get(best)
+                        if data and data.get('ema') is not None:
+                            price = data['prices'][-1]
+                            ema = data['ema']
+                            rsi = data['rsi']
+                            if price > ema and rsi > settings.rsi_overbought:
+                                direction = "call"
+                            elif price < ema and rsi < settings.rsi_oversold:
+                                direction = "put"
+                            else:
+                                direction = None
+                            if direction:
+                                logger.info(f"🚀 Trading {best} {direction} at :00")
+                                await self._execute_trade(best, direction)
                     self._trade_counter += 1
                 await asyncio.sleep(1)
             except asyncio.CancelledError:
@@ -368,8 +277,6 @@ class TradingBot:
         try:
             stake = self.stake
             duration = settings.trade_duration
-            logger.info(f"💼 Placing trade: {direction} {asset} with stake {stake}")
-
             client = self.client._client
             if direction == "call":
                 trade_id, result = await client.buy(asset, stake, duration, check_win=True)

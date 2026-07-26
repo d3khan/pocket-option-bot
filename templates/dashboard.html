@@ -35,11 +35,11 @@
             const connected = data.connected;
             let buttonsHtml = '';
             if (!connected) {
-                buttonsHtml = `<button onclick="connectBot()">Connect</button>`;
+                buttonsHtml = `<button id="connectBtn" onclick="connectBot()">Connect</button>`;
             } else if (connected && !running) {
-                buttonsHtml = `<button onclick="startBot()">Start Bot</button>`;
+                buttonsHtml = `<button id="startBtn" onclick="startBot()">Start Bot</button>`;
             } else if (running) {
-                buttonsHtml = `<button onclick="stopBot()">Stop Bot</button>`;
+                buttonsHtml = `<button id="stopBtn" onclick="stopBot()">Stop Bot</button>`;
             }
 
             const controlHtml = `
@@ -61,18 +61,53 @@
                 .catch(() => {});
         }
 
-        // --- Actions ---
-        window.startBot = function() {
-            fetch('/api/start', { method: 'POST' })
-                .then(() => fetchStatus());
-        };
-        window.stopBot = function() {
-            fetch('/api/stop', { method: 'POST' })
-                .then(() => fetchStatus());
-        };
+        // --- Actions with button disabling ---
         window.connectBot = function() {
+            const btn = document.getElementById('connectBtn');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Connecting...';
+            }
             fetch('/api/connect', { method: 'POST' })
-                .then(() => fetchStatus());
+                .then(() => fetchStatus())
+                .finally(() => {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = 'Connect';
+                    }
+                });
+        };
+
+        window.startBot = function() {
+            const btn = document.getElementById('startBtn');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Starting...';
+            }
+            fetch('/api/start', { method: 'POST' })
+                .then(() => fetchStatus())
+                .finally(() => {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = 'Start Bot';
+                    }
+                });
+        };
+
+        window.stopBot = function() {
+            const btn = document.getElementById('stopBtn');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Stopping...';
+            }
+            fetch('/api/stop', { method: 'POST' })
+                .then(() => fetchStatus())
+                .finally(() => {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = 'Stop Bot';
+                    }
+                });
         };
 
         // --- Start polling ---
