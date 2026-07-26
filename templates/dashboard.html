@@ -15,34 +15,96 @@
     </main>
 </div>
 <script>
-    // Choose secure WebSocket protocol based on page protocol
-    const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-    let ws = new WebSocket(`${protocol}${window.location.host}/ws`);
+    (function() {
+        // --- Configuration ---
+        const POLL_INTERVAL_MS = 500; // 0.5 seconds
+        let usePolling = false;
+        let pollIntervalId = null;
 
-    ws.onmessage = function(event) {
-        const data = JSON.parse(event.data);
-        const statsHtml = `
-            <div class="stats-grid">
-                <div class="stat-card"><span>Balance:</span><span>$${data.balance.toFixed(2)}</span></div>
-                <div class="stat-card"><span>Session P/L:</span><span>$${data.total_pnl.toFixed(2)}</span></div>
-                <div class="stat-card"><span>Win Rate:</span><span>${data.win_rate}%</span></div>
-                <div class="stat-card"><span>Stake:</span><span>$${data.current_stake.toFixed(2)}</span></div>
-                <div class="stat-card"><span>Loss Streak:</span><span>${data.consecutive_losses}</span></div>
-                <div class="stat-card"><span>Asset:</span><span>${data.current_asset || "None"}</span></div>
-            </div>
-        `;
-        document.getElementById('stats').innerHTML = statsHtml;
-    };
+        // --- Update stats (matches your current stats layout) ---
+        function updateStats(data) {
+            const statsHtml = `
+                <div class="stats-grid">
+                    <div class="stat-card"><span>Balance: </span><span>$${data.balance.toFixed(2)}</span></div>
+                    <div class="stat-card"><span>Session P/L: </span><span>$${data.total_pnl.toFixed(2)}</span></div>
+                    <div class="stat-card"><span>Win Rate: </span><span>${data.win_rate}%</span></div>
+                    <div class="stat-card"><span>Stake: </span><span>$${data.current_stake.toFixed(2)}</span></div>
+                    <div class="stat-card"><span>Loss Streak: </span><span>${data.consecutive_losses}</span></div>
+                    <div class="stat-card"><span>Asset: </span><span>${data.current_asset || "None"}</span></div>
+                </div>
+            `;
+            document.getElementById('stats').innerHTML = statsHtml;
+        }
 
-    ws.onopen = function() {
-        console.log('WebSocket connected');
-    };
+        // --- HTTP polling ---
+        function startPolling() {
+            if (pollIntervalId) return;
+            console.log('🔄 WebSocket failed, switching to HTTP polling...');
+            usePolling = true;
+            fetchStatsViaHttp();
+            pollIntervalId = setInterval(fetchStatsViaHttp, POLL_INTERVAL_MS);
+        }
 
-    ws.onclose = function() {
-        console.log('WebSocket disconnected, reconnecting...');
+        function stopPolling() {
+            if (pollIntervalId) {
+                clearInterval(pollIntervalId);
+                pollIntervalId = null;
+                usePolling = false;
+                console.log('✅ Switched back to WebSocket, polling stopped.');
+            }
+        }
+
+        function fetchStatsViaHttp() {
+            fetch('/api/status')
+                .then(response => {
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    return response.json();
+                })
+                .then(data => updateStats(data))
+                .catch(() => {}); // silent fail
+        }
+
+        // --- WebSocket ---
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            const ws = new WebSocket(`${protocol}${window.location.host}/ws`);
+
+            ws.onopen = function() {
+                console.log('✅ WebSocket connected');
+                if (usePolling) stopPolling();
+            };
+
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateStats(data);
+                } catch (e) {
+                    console.warn('WebSocket parse error:', e);
+                }
+            };
+
+            ws.onclose = function() {
+                console.warn('⚠️ WebSocket closed, starting polling fallback...');
+                startPolling();
+            };
+
+            ws.onerror = function() {
+                console.warn('⚠️ WebSocket error, starting polling fallback...');
+                startPolling();
+            };
+        }
+
+        // --- Start ---
+        initWebSocket();
+
+        // Fallback: if no stats after 3s, force polling
         setTimeout(() => {
-            ws = new WebSocket(`${protocol}${window.location.host}/ws`);
-        }, 1000);
-    };
+            const statsEl = document.getElementById('stats');
+            if (statsEl && statsEl.innerHTML.trim() === 'Loading stats...') {
+                console.warn('⏰ No stats update after 3s, forcing polling...');
+                startPolling();
+            }
+        }, 3000);
+    })();
 </script>
 {% endblock %}
