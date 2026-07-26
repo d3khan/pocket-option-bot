@@ -16,7 +16,7 @@
 </div>
 <script>
     // Choose secure WebSocket protocol based on page protocol
-    const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+    const protocol = window.location.protocol === 'https:' ? 'ws://' : 'ws://';
     let ws = new WebSocket(`${protocol}${window.location.host}/ws`);
 
     ws.onmessage = function(event) {
