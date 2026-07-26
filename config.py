@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     base_stake: float = 1.0
     multiplier: float = 2.5
     max_stake: float = 16
-    min_payout: int = 70
+    min_payout: int = 92
     trade_duration: int = 30
     max_consecutive_losses: int = 4
     max_daily_loss: float = 50.0
