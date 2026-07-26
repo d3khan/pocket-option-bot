@@ -27,6 +27,24 @@ class Settings(BaseSettings):
         "NZDJPY_otc", "CADJPY_otc", "CHFSGD_otc", "AUDJPY_otc", "AUDNZD_otc",
         "AUDNZD_otc", "EURGBP_otc",
 
+        # Exotic currency pairs
+"NGNUSD_otc", "USDNGN_otc", "USDMXN_otc", "USDZAR_otc", "USDTRY_otc",
+"USDTHB_otc", "USDINR_otc", "USDBRL_otc", "USDCNH_otc", "USDCZK_otc",
+"USDDKK_otc", "USDHKD_otc", "USDHUF_otc", "USDIDR_otc", "USDILS_otc",
+"USDKRW_otc", "USDNOK_otc", "USDPHP_otc", "USDPLN_otc", "USDRUB_otc",
+"USDSEK_otc", "USDSGD_otc", "USDTWD_otc", "USDVND_otc", "USDAED_otc",
+"USDSAR_otc", "USDCOP_otc", "USDCLP_otc", "USDPEN_otc", "USDARS_otc",
+
+# Exotic cross pairs
+"EURTRY_otc", "GBPTRY_otc", "EURZAR_otc", "GBPZAR_otc", "EURMXN_otc",
+"GBPMXN_otc", "EURPLN_otc", "GBPPLN_otc", "EURHUF_otc", "GBPHUF_otc",
+"EURNOK_otc", "GBPNOK_otc", "EURSEK_otc", "GBPSEK_otc", "EURCZK_otc",
+"GBPCZK_otc", "EURNGN_otc", "GBPNGN_otc", "EURINR_otc", "GBPINR_otc",
+"EURPHP_otc", "GBPPHP_otc", "EURIDR_otc", "GBPIDR_otc", "EURKRW_otc",
+"GBPKRW_otc", "EURTHB_otc", "GBPTHB_otc", "EURBRL_otc", "GBPBRL_otc",
+"EURCOP_otc", "GBPCOP_otc", "EURCLP_otc", "GBPCLP_otc", "EURPEN_otc",
+"GBPPEN_otc", "EURARS_otc", "GBPARS_otc",
+
         # # Crypto OTC
         # "BTCUSD_otc", "ETHUSD_otc", "LTCUSD_otc", "DOGEUSD_otc", "DOGE_otc",
         # "SOLUSD_otc", "TONUSD_otc", "ADAUSD_otc", "XRPUSD_otc", "BNBUSD_otc",
