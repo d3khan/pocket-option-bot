@@ -53,21 +53,30 @@ class AssetWorker:
                 'prices': deque(maxlen=40),
                 'ema': None,
                 'rsi': None,
+                'ready': False,   # indicator ready flag
             }
             try:
-                candles = await self.client.get_candles(asset, period=60, offset=0)
-                if len(candles) >= 40:
-                    closes = [c['close'] for c in candles[-40:]]
+                # Fetch 40 candles (60s * 40 = 2400 seconds offset)
+                candles = await self.client.get_candles(asset, period=60, offset=2400)
+                if len(candles) >= 20:
+                    closes = [c['close'] for c in candles[-20:]]
                     self.asset_data[asset]['prices'] = deque(closes, maxlen=40)
                     self._update_indicators(asset, self.asset_data[asset])
                     score = self._compute_score(asset, self.asset_data[asset])
                     await self.score_manager.update_score(asset, score)
-                    logger.debug(f"Prefetched 40 candles for {asset}")
+                    self.asset_data[asset]['ready'] = True
+                    logger.info(f"Prefetched {len(closes)} candles for {asset} – indicators ready")
                 else:
-                    logger.warning(f"Only {len(candles)} candles for {asset}, need 40")
+                    # Not enough data yet – will wait for streaming to fill
+                    closes = [c['close'] for c in candles]
+                    self.asset_data[asset]['prices'] = deque(closes, maxlen=40)
+                    logger.warning(f"Only {len(closes)} candles for {asset}, need 20. Waiting for more data...")
             except Exception as e:
                 logger.error(f"Failed to fetch history for {asset}: {e}")
+                # Initialize with empty deque, will fill via streaming
+                self.asset_data[asset]['prices'] = deque(maxlen=40)
 
+        # Start subscription loop
         self.task = asyncio.create_task(self._run())
         logger.info(f"Worker started for {len(self.assets)} assets: {self.assets}")
 
@@ -90,20 +99,39 @@ class AssetWorker:
                     pass
 
     async def _subscribe_asset(self, asset: str):
-        try:
-            sub = await self.client.subscribe_symbol_time_aligned(asset, timedelta(seconds=60))
-            async for candle in sub:
-                if not self.running:
-                    break
-                data = self.asset_data[asset]
-                data['prices'].append(candle['close'])
-                self._update_indicators(asset, data)
-                score = self._compute_score(asset, data)
-                await self.score_manager.update_score(asset, score)
-        except asyncio.CancelledError:
-            logger.debug(f"Subscription cancelled for {asset}")
-        except Exception as e:
-            logger.error(f"Subscription error for {asset}: {e}")
+        """Subscribe to candles for a single asset with retry logic."""
+        retry_count = 0
+        max_retries = 3
+        while self.running and retry_count < max_retries:
+            try:
+                sub = await self.client.subscribe_symbol_time_aligned(asset, timedelta(seconds=60))
+                async for candle in sub:
+                    if not self.running:
+                        break
+                    data = self.asset_data[asset]
+                    data['prices'].append(candle['close'])
+                    self._update_indicators(asset, data)
+                    score = self._compute_score(asset, data)
+                    if score > 0:
+                        await self.score_manager.update_score(asset, score)
+                        if not data.get('ready') and len(data['prices']) >= 20:
+                            data['ready'] = True
+                            logger.info(f"Asset {asset} now has enough data for indicators")
+                # If loop exits without cancellation, it means subscription ended
+                if self.running:
+                    logger.warning(f"Subscription for {asset} ended unexpectedly, retrying...")
+                    retry_count += 1
+                    await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                logger.debug(f"Subscription cancelled for {asset}")
+                break
+            except Exception as e:
+                logger.error(f"Subscription error for {asset}: {e}")
+                if self.running:
+                    retry_count += 1
+                    await asyncio.sleep(2)
+        if not self.running:
+            logger.info(f"Subscription for {asset} stopped (worker not running)")
 
     def _update_indicators(self, asset, data):
         closes = list(data['prices'])
