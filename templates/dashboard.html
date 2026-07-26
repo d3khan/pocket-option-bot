@@ -9,20 +9,15 @@
     </header>
     <main>
         <section id="stats">Loading stats...</section>
-        <section id="control" hx-get="/partials/control" hx-trigger="load, every 5s" hx-swap="innerHTML">
-            Loading controls...
-        </section>
+        <section id="control">Loading controls...</section>
     </main>
 </div>
 <script>
     (function() {
-        // --- Configuration ---
-        const POLL_INTERVAL_MS = 500; // 0.5 seconds
-        let usePolling = false;
-        let pollIntervalId = null;
+        const POLL_INTERVAL_MS = 500;
 
-        // --- Update stats (matches your current stats layout) ---
-        function updateStats(data) {
+        function updateUI(data) {
+            // Stats
             const statsHtml = `
                 <div class="stats-grid">
                     <div class="stat-card"><span>Balance: </span><span>$${data.balance.toFixed(2)}</span></div>
@@ -34,77 +29,55 @@
                 </div>
             `;
             document.getElementById('stats').innerHTML = statsHtml;
-        }
 
-        // --- HTTP polling ---
-        function startPolling() {
-            if (pollIntervalId) return;
-            console.log('🔄 WebSocket failed, switching to HTTP polling...');
-            usePolling = true;
-            fetchStatsViaHttp();
-            pollIntervalId = setInterval(fetchStatsViaHttp, POLL_INTERVAL_MS);
-        }
-
-        function stopPolling() {
-            if (pollIntervalId) {
-                clearInterval(pollIntervalId);
-                pollIntervalId = null;
-                usePolling = false;
-                console.log('✅ Switched back to WebSocket, polling stopped.');
+            // Control panel
+            const running = data.running;
+            const connected = data.connected;
+            let buttonsHtml = '';
+            if (!connected) {
+                buttonsHtml = `<button onclick="connectBot()">Connect</button>`;
+            } else if (connected && !running) {
+                buttonsHtml = `<button onclick="startBot()">Start Bot</button>`;
+            } else if (running) {
+                buttonsHtml = `<button onclick="stopBot()">Stop Bot</button>`;
             }
+
+            const controlHtml = `
+                <div class="control-panel">
+                    <div class="controls">${buttonsHtml}</div>
+                    <div class="status-grid">
+                        <div class="status-item"><span>Status:</span> <strong>${running ? "Running" : "Stopped"}</strong></div>
+                        <div class="status-item"><span>Connected:</span> <strong>${connected ? "Yes" : "No"}</strong></div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('control').innerHTML = controlHtml;
         }
 
-        function fetchStatsViaHttp() {
+        function fetchStatus() {
             fetch('/api/status')
-                .then(response => {
-                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                    return response.json();
-                })
-                .then(data => updateStats(data))
-                .catch(() => {}); // silent fail
+                .then(r => r.json())
+                .then(data => updateUI(data))
+                .catch(() => {});
         }
 
-        // --- WebSocket ---
-        function initWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-            const ws = new WebSocket(`${protocol}${window.location.host}/ws`);
+        // --- Actions ---
+        window.startBot = function() {
+            fetch('/api/start', { method: 'POST' })
+                .then(() => fetchStatus());
+        };
+        window.stopBot = function() {
+            fetch('/api/stop', { method: 'POST' })
+                .then(() => fetchStatus());
+        };
+        window.connectBot = function() {
+            fetch('/api/connect', { method: 'POST' })
+                .then(() => fetchStatus());
+        };
 
-            ws.onopen = function() {
-                console.log('✅ WebSocket connected');
-                if (usePolling) stopPolling();
-            };
-
-            ws.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    updateStats(data);
-                } catch (e) {
-                    console.warn('WebSocket parse error:', e);
-                }
-            };
-
-            ws.onclose = function() {
-                console.warn('⚠️ WebSocket closed, starting polling fallback...');
-                startPolling();
-            };
-
-            ws.onerror = function() {
-                console.warn('⚠️ WebSocket error, starting polling fallback...');
-                startPolling();
-            };
-        }
-
-        // --- Start ---
-        initWebSocket();
-
-        // Fallback: if no stats after 3s, force polling
-        setTimeout(() => {
-            const statsEl = document.getElementById('stats');
-            if (statsEl && statsEl.innerHTML.trim() === 'Loading stats...') {
-                console.warn('⏰ No stats update after 3s, forcing polling...');
-                startPolling();
-            }
-        }, 3000);
+        // --- Start polling ---
+        fetchStatus();
+        setInterval(fetchStatus, POLL_INTERVAL_MS);
     })();
 </script>
 {% endblock %}

@@ -12,35 +12,47 @@ class POClient:
         self.ssid = ssid
         self._client: Optional[PocketOptionAsync] = None
         self._connected = False
+        self.balance = 0.0  # <-- added balance attribute
 
-    async def connect(self) -> bool:
-        try:
-            self._client = PocketOptionAsync(ssid=self.ssid)
-            await self._client.connect()
-            await self._client.wait_for_assets(timeout=60)
-            self._connected = self._client.is_connected()
-            return self._connected
-        except Exception as e:
-            logger.error(f"Connection error: {e}")
-            return False
+    async def connect(self, max_retries: int = 3) -> bool:
+        for attempt in range(max_retries):
+            try:
+                self._client = PocketOptionAsync(ssid=self.ssid)
+                await asyncio.wait_for(self._client.connect(), timeout=90)
+                await asyncio.wait_for(self._client.wait_for_assets(timeout=90), timeout=90)
+                self._connected = self._client.is_connected()
+                if self._connected:
+                    self.balance = float(await self._client.balance())
+                    logger.info(f"Connected successfully (attempt {attempt + 1})")
+                    return True
+            except asyncio.TimeoutError:
+                logger.warning(f"Connection attempt {attempt + 1} timed out")
+            except Exception as e:
+                logger.error(f"Connection attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(5)
+        logger.error("All connection attempts failed.")
+        self._connected = False
+        return False
 
     async def disconnect(self):
         if self._client:
-            await self._client.shutdown()
+            try:
+                await self._client.shutdown()
+            except Exception:
+                pass
         self._connected = False
 
     @property
     def is_connected(self) -> bool:
         return self._connected and self._client is not None and self._client.is_connected()
 
-    async def get_balance(self) -> float:
-        if not self.is_connected:
-            return 0.0
-        try:
-            return float(await self._client.balance())
-        except Exception as e:
-            logger.error(f"Balance error: {e}")
-            return 0.0
+    async def refresh_balance(self):
+        if self.is_connected:
+            try:
+                self.balance = float(await self._client.balance())
+            except Exception:
+                pass
 
     async def get_assets(self) -> Dict[str, Any]:
         if not self.is_connected:
@@ -97,17 +109,19 @@ class POClient:
             logger.error(f"Candles error: {e}")
             return []
 
-    async def subscribe_candles(self, asset: str, callback):
+    async def subscribe_symbol_time_aligned(self, asset: str, callback):
         if not self.is_connected:
             return
         try:
-            # Use timedelta for interval
             sub = await self._client.subscribe_symbol_time_aligned(asset, timedelta(seconds=60))
             async for candle in sub:
-                await callback({**candle, "asset": asset})
+                await callback(candle)
         except Exception as e:
             logger.error(f"Subscription error: {e}")
 
     async def unsubscribe(self, asset: str):
         if self._client:
-            await self._client.unsubscribe(asset)
+            try:
+                await self._client.unsubscribe(asset)
+            except Exception:
+                pass
