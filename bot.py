@@ -16,7 +16,7 @@ class TradingBot:
         self._task: Optional[asyncio.Task] = None
         self._current_asset: Optional[str] = None
         self._eligible_assets: list = []
-        self._recent_trades = deque(maxlen=15)  # remember last 15 assets
+        self._recent_trades = deque(maxlen=10)  # remember last 10 assets
 
         # Risk state (martingale)
         self.stake = settings.base_stake
@@ -199,7 +199,7 @@ class TradingBot:
     async def _on_signal(self, candle: Dict):
         if not self._running:
             return
-        direction = "PUT" if candle["close"] > candle["open"] else "CALL"
+        direction = "CALL" if candle["close"] > candle["open"] else "PUT"
         stake = self.stake
         duration = settings.trade_duration
 
