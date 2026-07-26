@@ -16,7 +16,7 @@ class TradingBot:
         self._task: Optional[asyncio.Task] = None
         self._current_asset: Optional[str] = None
         self._eligible_assets: list = []
-        self._recent_trades = deque(maxlen=2)  # remember last 2 assets
+        self._recent_trades = deque(maxlen=5)  # remember last 5 assets
 
         # Risk state (martingale)
         self.stake = settings.base_stake
