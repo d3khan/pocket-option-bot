@@ -12,7 +12,7 @@ class POClient:
         self.ssid = ssid
         self._client: Optional[PocketOptionAsync] = None
         self._connected = False
-        self.balance = 0.0  # <-- added balance attribute
+        self.balance = 0.0
 
     async def connect(self, max_retries: int = 3) -> bool:
         for attempt in range(max_retries):
@@ -109,11 +109,12 @@ class POClient:
             logger.error(f"Candles error: {e}")
             return []
 
-    async def subscribe_symbol_time_aligned(self, asset: str, callback):
+    async def subscribe_candles(self, asset: str, callback, period: int = 60):
+        """Subscribe to candles with custom period."""
         if not self.is_connected:
             return
         try:
-            sub = await self._client.subscribe_symbol_time_aligned(asset, timedelta(seconds=60))
+            sub = await self._client.subscribe_symbol_time_aligned(asset, timedelta(seconds=period))
             async for candle in sub:
                 await callback(candle)
         except Exception as e:
