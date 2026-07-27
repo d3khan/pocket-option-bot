@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from jinja2 import Environment, FileSystemLoader
@@ -28,6 +28,10 @@ Path("data").mkdir(exist_ok=True)
 # Globals
 client = POClient(settings.ssid)
 bot = TradingBot(client)
+
+# Connection status tracking
+connection_status = "disconnected"  # disconnected, connecting, connected, failed
+connection_error = None
 
 app = FastAPI(title="Pocket Bot Simple")
 
@@ -102,9 +106,11 @@ app.add_middleware(AuthMiddleware)
 # ---------- Lifespan (no auto‑connect) ----------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Do NOT auto‑connect – user must click Connect button
+    logger.info("🚀 Application starting – no auto‑connect")
     yield
+    logger.info("🛑 Application shutting down, disconnecting...")
     await bot.disconnect()
+    logger.info("✅ Application shutdown complete")
 
 app.router.lifespan_context = lifespan
 
@@ -141,43 +147,81 @@ async def logout(request: Request, response: Response):
 async def dashboard(request: Request):
     return render_template("dashboard.html", request=request)
 
-# ---------- API endpoints (with logging) ----------
+# ---------- Background connection task ----------
+async def background_connect():
+    global connection_status, connection_error
+    try:
+        logger.info("🌐 [BG] Starting background connection...")
+        connection_status = "connecting"
+        logger.info("🌐 [BG] Calling bot.connect()...")
+        success = await bot.connect()
+        if success:
+            connection_status = "connected"
+            logger.info("🌐 [BG] ✅ Connection successful! Bot ready.")
+        else:
+            connection_status = "failed"
+            connection_error = "Connection failed (bot.connect returned False)"
+            logger.error("🌐 [BG] ❌ Connection failed.")
+    except Exception as e:
+        connection_status = "failed"
+        connection_error = str(e)
+        logger.error(f"🌐 [BG] ❌ Exception: {e}", exc_info=True)
+
+# ---------- API endpoints ----------
 @app.post("/api/connect")
 async def connect():
-    logger.info("API: Connect called")
-    if await bot.connect():
-        logger.info("API: Connect successful")
-        return {"status": "connected"}
-    logger.error("API: Connect failed")
-    return {"status": "failed"}
+    global connection_status, connection_error
+    logger.info("📡 API /api/connect called")
+    if connection_status == "connecting":
+        logger.warning("📡 API /api/connect: Already connecting, ignoring.")
+        return {"status": "already connecting"}
+    if connection_status == "connected":
+        logger.warning("📡 API /api/connect: Already connected.")
+        return {"status": "already connected"}
+    connection_error = None
+    logger.info("📡 API /api/connect: Starting background connection...")
+    asyncio.create_task(background_connect())
+    logger.info("📡 API /api/connect: Background task started, returning immediately.")
+    return {"status": "connecting"}
 
 @app.post("/api/start")
 async def start_trading():
-    logger.info("API: Start trading called")
-    try:
-        if bot._running:
-            logger.warning("API: Bot already running")
-            return {"status": "already running"}
-        await bot.start_trading()
-        logger.info("API: start_trading() completed")
-        return {"status": "started"}
-    except Exception as e:
-        logger.error(f"API: start_trading exception: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
+    global connection_status
+    logger.info("📡 API /api/start called")
+    if connection_status != "connected":
+        logger.warning("📡 API /api/start: Not connected (status=%s)", connection_status)
+        return {"status": "not connected", "detail": f"Connection status: {connection_status}"}
+    if not bot._ready:
+        logger.warning("📡 API /api/start: Bot not ready (assets not loaded)")
+        return {"status": "not ready", "detail": "Bot still initializing, please wait."}
+    if bot._running:
+        logger.warning("📡 API /api/start: Bot already running")
+        return {"status": "already running"}
+    logger.info("📡 API /api/start: Calling bot.start_trading()...")
+    await bot.start_trading()
+    logger.info("📡 API /api/start: start_trading() completed.")
+    return {"status": "started"}
 
 @app.post("/api/stop")
 async def stop_trading():
-    logger.info("API: Stop trading called")
+    logger.info("📡 API /api/stop called")
     if bot._running:
         await bot.stop_trading()
-        logger.info("API: Trading stopped")
+        logger.info("📡 API /api/stop: Trading stopped.")
         return {"status": "stopped"}
-    logger.warning("API: Bot not running")
-    return {"status": "not running"}
+    else:
+        logger.warning("📡 API /api/stop: Bot not running")
+        return {"status": "not running"}
 
 @app.get("/api/status")
 async def status():
-    return bot.get_stats()
+    global connection_status, connection_error
+    stats = bot.get_stats()
+    stats["connection_status"] = connection_status
+    if connection_error:
+        stats["connection_error"] = connection_error
+    logger.debug(f"📡 API /api/status: stats ok (conn={connection_status})")
+    return stats
 
 if __name__ == "__main__":
     import uvicorn

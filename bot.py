@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 class ScoreManager:
-    """Tracks scores for all assets and picks the top ones."""
     def __init__(self):
         self.scores: Dict[str, float] = {}
         self.best_asset: Optional[str] = None
@@ -24,22 +23,20 @@ class ScoreManager:
             self.scores[asset] = score
             if self.scores:
                 self.best_asset = max(self.scores, key=self.scores.get)
+            logger.debug(f"📊 Score updated: {asset} = {score:.2f} (best: {self.best_asset})")
 
     def get_best(self) -> Optional[str]:
         return self.best_asset
-
-    def get_top_n(self, n: int) -> List[str]:
-        sorted_scores = sorted(self.scores.items(), key=lambda x: x[1], reverse=True)
-        return [asset for asset, _ in sorted_scores[:n]]
 
 
 class TradingBot:
     def __init__(self, client: POClient):
         self.client = client
         self._running = False
-        self._subscribed_assets: List[str] = []           # currently active 4 assets
-        self._all_assets: List[str] = []                  # all eligible OTC assets
-        self._asset_data: Dict[str, Dict] = {}            # indicators for all assets
+        self._ready = False  # True when initial assets selected and subscribed
+        self._subscribed_assets: List[str] = []
+        self._all_assets: List[str] = []
+        self._asset_data: Dict[str, Dict] = {}
         self._score_manager = ScoreManager()
         self._subscription_tasks: List[asyncio.Task] = []
         self._trade_task: Optional[asyncio.Task] = None
@@ -59,19 +56,26 @@ class TradingBot:
 
     # ---------- Connection & Asset Scanning ----------
     async def connect(self) -> bool:
+        logger.info("🔌 [BOT] connect() called")
         if await self.client.connect():
+            logger.info("🔌 [BOT] POClient connected successfully")
+            logger.info("🔌 [BOT] Scanning assets...")
             await self._scan_assets()
-            # Pre‑fetch 20 candles for all assets and calculate initial scores
+            logger.info("🔌 [BOT] Fetching initial data for all assets...")
             await self._fetch_initial_data()
-            # Subscribe to the top 4 assets
+            logger.info("🔌 [BOT] Subscribing to top 4 assets...")
             await self._subscribe_top_assets()
-            # Start rebalance loop
-            self._rebalance_task = asyncio.create_task(self._rebalance_loop())
+            self._ready = True
+            logger.info("🔌 [BOT] ✅ Ready to trade!")
             return True
-        return False
+        else:
+            logger.error("🔌 [BOT] ❌ POClient connection failed.")
+            return False
 
     async def disconnect(self):
+        logger.info("🔌 [BOT] disconnect() called")
         self._running = False
+        self._ready = False
         for task in self._subscription_tasks:
             task.cancel()
         if self._trade_task:
@@ -79,10 +83,13 @@ class TradingBot:
         if self._rebalance_task:
             self._rebalance_task.cancel()
         for asset in self._subscribed_assets:
+            logger.info(f"🔌 [BOT] Unsubscribing from {asset}")
             await self.client.unsubscribe(asset)
         await self.client.disconnect()
+        logger.info("🔌 [BOT] Disconnected")
 
     async def _scan_assets(self):
+        logger.info("📡 [BOT] _scan_assets() starting...")
         assets = await self.client.get_assets()
         eligible = []
         for symbol, info in assets.items():
@@ -94,14 +101,15 @@ class TradingBot:
             if payout >= settings.min_payout:
                 eligible.append((symbol, payout))
         eligible.sort(key=lambda x: x[1], reverse=True)
-        self._all_assets = [sym for sym, _ in eligible[:30]]  # keep top 30 for pool
-        logger.info(f"Found {len(self._all_assets)} OTC assets with payout >= {settings.min_payout}%")
+        self._all_assets = [sym for sym, _ in eligible[:30]]
+        logger.info(f"📡 [BOT] ✅ Found {len(self._all_assets)} eligible OTC assets (top 30 kept)")
 
     async def _fetch_initial_data(self):
-        """Fetch 20 candles for all assets and compute indicators."""
-        for asset in self._all_assets:
+        logger.info("📊 [BOT] _fetch_initial_data() starting...")
+        for idx, asset in enumerate(self._all_assets):
             try:
-                candles = await self.client.get_candles(asset, period=60, offset=1200)  # 20 candles
+                logger.info(f"📊 [BOT]   Fetching data for {asset} ({idx+1}/{len(self._all_assets)})...")
+                candles = await self.client.get_candles(asset, period=60, offset=1200)
                 if len(candles) >= 20:
                     closes = [c['close'] for c in candles[-20:]]
                     self._asset_data[asset] = {
@@ -113,30 +121,35 @@ class TradingBot:
                     self._update_indicators(asset, self._asset_data[asset])
                     score = self._compute_score(asset, self._asset_data[asset])
                     await self._score_manager.update_score(asset, score)
-                    logger.info(f"Initialized {asset} – score {score:.2f}")
+                    logger.info(f"📊 [BOT]   ✅ {asset}: score={score:.2f}")
                 else:
-                    logger.warning(f"Only {len(candles)} candles for {asset}, skipping")
+                    logger.warning(f"📊 [BOT]   ⚠️ {asset}: only {len(candles)} candles, skipping")
             except Exception as e:
-                logger.error(f"Failed to fetch data for {asset}: {e}")
+                logger.error(f"📊 [BOT]   ❌ Failed to fetch data for {asset}: {e}")
+        logger.info("📊 [BOT] _fetch_initial_data() complete")
 
     async def _subscribe_top_assets(self):
-        """Subscribe to the top 4 assets by score."""
+        logger.info("🔗 [BOT] _subscribe_top_assets() starting...")
         top_assets = self._score_manager.get_top_n(4)
         if not top_assets:
-            logger.error("No assets with scores, cannot subscribe")
+            logger.error("🔗 [BOT] ❌ No assets with scores, cannot subscribe")
             return
         self._subscribed_assets = top_assets
+        logger.info(f"🔗 [BOT] Top 4 assets: {top_assets}")
         for asset in top_assets:
+            logger.info(f"🔗 [BOT] Subscribing to {asset}...")
             task = asyncio.create_task(self._subscribe_asset(asset))
             self._subscription_tasks.append(task)
-        logger.info(f"Subscribed to top 4 assets: {top_assets}")
+        logger.info("🔗 [BOT] ✅ All top assets subscribed")
 
     async def _subscribe_asset(self, asset: str):
-        """Subscribe to a single asset and process its candles."""
+        logger.info(f"🔗 [BOT] _subscribe_asset({asset}) started")
         try:
             sub = await self.client._client.subscribe_symbol_time_aligned(asset, timedelta(seconds=60))
+            logger.info(f"🔗 [BOT] {asset}: subscribed, waiting for candles...")
             async for candle in sub:
-                if not self._running:
+                if not self._running and not self._ready:
+                    logger.info(f"🔗 [BOT] {asset}: stopping subscription (bot not ready/running)")
                     break
                 data = self._asset_data.get(asset)
                 if data:
@@ -144,43 +157,47 @@ class TradingBot:
                     self._update_indicators(asset, data)
                     score = self._compute_score(asset, data)
                     await self._score_manager.update_score(asset, score)
+                    logger.debug(f"🔗 [BOT] {asset}: new candle close={candle['close']:.5f}, score={score:.2f}")
+                else:
+                    logger.warning(f"🔗 [BOT] {asset}: received candle but no asset_data dict")
         except asyncio.CancelledError:
-            pass
+            logger.info(f"🔗 [BOT] {asset}: subscription cancelled")
         except Exception as e:
-            logger.error(f"Subscription error for {asset}: {e}")
+            logger.error(f"🔗 [BOT] {asset}: subscription error: {e}", exc_info=True)
 
-    # ---------- Rebalance Logic ----------
+    # ---------- Rebalance Loop ----------
     async def _rebalance_loop(self):
-        """Periodically check if we should replace an active asset."""
+        logger.info("🔄 [BOT] _rebalance_loop() started")
         while self._running:
-            await asyncio.sleep(60)  # check every minute
+            await asyncio.sleep(60)
             if not self._running:
                 break
-            # Get current scores for all assets
+            logger.info("🔄 [BOT] Checking asset scores for rebalance...")
             all_scores = {asset: self._score_manager.scores.get(asset, 0) for asset in self._all_assets}
-            # Get top 4 overall
             top_assets = sorted(all_scores, key=all_scores.get, reverse=True)[:4]
-            # Compare with currently subscribed assets
             current_set = set(self._subscribed_assets)
             new_set = set(top_assets)
             if current_set != new_set:
                 to_add = new_set - current_set
                 to_remove = current_set - new_set
-                # Unsubscribe removed assets
+                logger.info(f"🔄 [BOT] Rebalancing: removing {list(to_remove)}, adding {list(to_add)}")
                 for asset in to_remove:
                     if asset in self._subscribed_assets:
                         self._subscribed_assets.remove(asset)
                         await self.client.unsubscribe(asset)
-                        logger.info(f"Unsubscribed {asset} – dropped from top 4")
-                # Subscribe to new assets
+                        logger.info(f"🔄 [BOT] Unsubscribed {asset}")
                 for asset in to_add:
                     if asset not in self._subscribed_assets:
                         self._subscribed_assets.append(asset)
                         task = asyncio.create_task(self._subscribe_asset(asset))
                         self._subscription_tasks.append(task)
-                        logger.info(f"Subscribed {asset} – entered top 4")
-                # Update the score manager's best asset for UI
-                self._score_manager.best_asset = top_assets[0] if top_assets else None
+                        logger.info(f"🔄 [BOT] Subscribed {asset}")
+                # Update best asset for UI
+                if top_assets:
+                    self._score_manager.best_asset = top_assets[0]
+                    logger.info(f"🔄 [BOT] New best asset: {top_assets[0]}")
+            else:
+                logger.debug("🔄 [BOT] No rebalance needed")
 
     # ---------- Indicator Helpers ----------
     def _update_indicators(self, asset, data):
@@ -189,6 +206,7 @@ class TradingBot:
             data['ema'] = self._compute_ema(closes, settings.ema_period)
         if len(closes) >= settings.rsi_period + 1:
             data['rsi'] = self._compute_rsi(closes, settings.rsi_period)
+        logger.debug(f"📊 [BOT] {asset}: updated indicators (ema={data['ema']:.5f if data['ema'] else None}, rsi={data['rsi']:.2f if data['rsi'] else None})")
 
     def _compute_ema(self, prices, period):
         if len(prices) < period:
@@ -227,24 +245,34 @@ class TradingBot:
             rsi_strength = (settings.rsi_oversold - rsi) / settings.rsi_oversold
         return price_diff * 100 + rsi_strength * 50
 
-    # ---------- Trading ----------
+    # ---------- Trading Control ----------
     async def start_trading(self):
+        logger.info("▶️ [BOT] start_trading() called")
         if self._running:
+            logger.warning("▶️ [BOT] Already running")
+            return
+        if not self._ready:
+            logger.warning("▶️ [BOT] Bot not ready (assets not loaded)")
             return
         if not self._subscribed_assets:
-            logger.error("No assets subscribed, cannot trade")
+            logger.error("▶️ [BOT] No active subscriptions, cannot trade")
             return
         self._running = True
+        self._rebalance_task = asyncio.create_task(self._rebalance_loop())
         self._trade_task = asyncio.create_task(self._trade_loop())
-        logger.info("▶️ Trading started")
+        logger.info("▶️ [BOT] Trading started")
 
     async def stop_trading(self):
+        logger.info("⏹️ [BOT] stop_trading() called")
         self._running = False
         if self._trade_task:
             self._trade_task.cancel()
-        logger.info("⏹️ Trading stopped")
+        if self._rebalance_task:
+            self._rebalance_task.cancel()
+        logger.info("⏹️ [BOT] Trading stopped")
 
     async def _trade_loop(self):
+        logger.info("🔄 [BOT] _trade_loop() started")
         while self._running:
             try:
                 now = datetime.now(timezone.utc)
@@ -256,27 +284,33 @@ class TradingBot:
                             price = data['prices'][-1]
                             ema = data['ema']
                             rsi = data['rsi']
+                            logger.info(f"📈 [BOT] Checking {best}: price={price:.5f}, ema={ema:.5f}, rsi={rsi:.2f}")
                             if price > ema and rsi > settings.rsi_overbought:
                                 direction = "call"
                             elif price < ema and rsi < settings.rsi_oversold:
                                 direction = "put"
                             else:
                                 direction = None
+                                logger.info(f"📈 [BOT] No signal for {best}")
                             if direction:
-                                logger.info(f"🚀 Trading {best} {direction} at :00")
+                                logger.info(f"🚀 [BOT] TRADE SIGNAL: {best} {direction} at :00")
                                 await self._execute_trade(best, direction)
+                    else:
+                        logger.debug("📈 [BOT] No best asset or not in subscribed list")
                     self._trade_counter += 1
                 await asyncio.sleep(1)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Trade loop error: {e}", exc_info=True)
+                logger.error(f"📈 [BOT] Trade loop error: {e}", exc_info=True)
                 await asyncio.sleep(1)
+        logger.info("🔄 [BOT] _trade_loop() ended")
 
     async def _execute_trade(self, asset, direction):
         try:
             stake = self.stake
             duration = settings.trade_duration
+            logger.info(f"💼 [BOT] Placing trade: {direction} {asset} with stake {stake}")
             client = self.client._client
             if direction == "call":
                 trade_id, result = await client.buy(asset, stake, duration, check_win=True)
@@ -308,15 +342,16 @@ class TradingBot:
             self.trade_history.insert(0, trade)
             if len(self.trade_history) > 100:
                 self.trade_history.pop()
-            logger.info(f"✅ Trade {trade['result']}: {direction} {asset} {stake:.2f} P&L: {profit:.2f}")
+            logger.info(f"✅ [BOT] Trade {trade['result']}: {direction} {asset} {stake:.2f} P&L: {profit:.2f}")
             await self.client.refresh_balance()
             self.balance = self.client.balance
         except Exception as e:
-            logger.error(f"❌ Trade execution error: {e}", exc_info=True)
+            logger.error(f"❌ [BOT] Trade execution error: {e}", exc_info=True)
 
     def reset_martingale(self):
         self.stake = settings.base_stake
         self.consecutive_losses = 0
+        logger.info("🔄 [BOT] Martingale reset")
 
     def get_stats(self):
         total = self.wins + self.losses
@@ -345,3 +380,4 @@ class TradingBot:
         self.losses = 0
         self.trade_history = []
         self._trade_counter = 0
+        logger.info("🔄 [BOT] Stats reset")
