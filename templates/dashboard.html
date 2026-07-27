@@ -31,15 +31,32 @@
             document.getElementById('stats').innerHTML = statsHtml;
 
             // Control panel
-            const running = data.running;
             const connected = data.connected;
+            const running = data.running;
+            const ready = data.ready || false;
+            const connectionStatus = data.connection_status || 'disconnected';
+
             let buttonsHtml = '';
-            if (!connected) {
-                buttonsHtml = `<button id="connectBtn" onclick="connectBot()">Connect</button>`;
-            } else if (connected && !running) {
-                buttonsHtml = `<button id="startBtn" onclick="startBot()">Start Bot</button>`;
+            let statusMessage = '';
+
+            if (connectionStatus === 'connecting') {
+                buttonsHtml = `<button disabled>Connecting...</button>`;
+                statusMessage = '⏳ Connecting to Pocket Option...';
+            } else if (connectionStatus === 'failed') {
+                buttonsHtml = `<button onclick="connectBot()" id="connectBtn">Connect (retry)</button>`;
+                statusMessage = '❌ Connection failed. Click to retry.';
+            } else if (!connected) {
+                buttonsHtml = `<button onclick="connectBot()" id="connectBtn">Connect</button>`;
+                statusMessage = '🔌 Not connected. Click Connect.';
+            } else if (connected && !ready) {
+                buttonsHtml = `<button disabled>Initializing...</button>`;
+                statusMessage = '⏳ Loading assets and calculating indicators...';
+            } else if (connected && ready && !running) {
+                buttonsHtml = `<button onclick="startBot()" id="startBtn">Start Bot</button>`;
+                statusMessage = '✅ Ready. Click Start Bot to begin trading.';
             } else if (running) {
-                buttonsHtml = `<button id="stopBtn" onclick="stopBot()">Stop Bot</button>`;
+                buttonsHtml = `<button onclick="stopBot()" id="stopBtn">Stop Bot</button>`;
+                statusMessage = '▶️ Trading is active.';
             }
 
             const controlHtml = `
@@ -48,7 +65,9 @@
                     <div class="status-grid">
                         <div class="status-item"><span>Status:</span> <strong>${running ? "Running" : "Stopped"}</strong></div>
                         <div class="status-item"><span>Connected:</span> <strong>${connected ? "Yes" : "No"}</strong></div>
+                        <div class="status-item"><span>Ready:</span> <strong>${ready ? "Yes" : "No"}</strong></div>
                     </div>
+                    <div class="status-message">${statusMessage}</div>
                 </div>
             `;
             document.getElementById('control').innerHTML = controlHtml;
@@ -71,10 +90,8 @@
             fetch('/api/connect', { method: 'POST' })
                 .then(() => fetchStatus())
                 .finally(() => {
-                    if (btn) {
-                        btn.disabled = false;
-                        btn.textContent = 'Connect';
-                    }
+                    // Re-enable after status update
+                    setTimeout(fetchStatus, 500);
                 });
         };
 
@@ -87,26 +104,17 @@
             fetch('/api/start', { method: 'POST' })
                 .then(() => fetchStatus())
                 .finally(() => {
-                    if (btn) {
-                        btn.disabled = false;
-                        btn.textContent = 'Start Bot';
-                    }
+                    setTimeout(fetchStatus, 500);
                 });
         };
 
         window.stopBot = function() {
             const btn = document.getElementById('stopBtn');
-            if (btn) {
-                btn.disabled = true;
-                btn.textContent = 'Stopping...';
-            }
+            if (btn) btn.disabled = true;
             fetch('/api/stop', { method: 'POST' })
                 .then(() => fetchStatus())
                 .finally(() => {
-                    if (btn) {
-                        btn.disabled = false;
-                        btn.textContent = 'Stop Bot';
-                    }
+                    if (btn) btn.disabled = false;
                 });
         };
 
