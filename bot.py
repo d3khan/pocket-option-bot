@@ -263,7 +263,7 @@ class TradingBot:
                     seconds_until_next_minute -= 1
                 wait_time = max(seconds_until_next_minute, 0.5)
                 logger.info(f"⏳ Waiting {wait_time:.2f} seconds for next candle start...")
-                await asyncio.sleep(wait_time + 3)
+                await asyncio.sleep(wait_time)
 
                 # ----- PLACE TRADE -----
                 logger.info(f"💹 Placing trade: {direction} on {self._current_asset}")
