@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     base_stake: float = 1.0
     multiplier: float = 2.5
     max_stake: float = 16.0
-    min_payout: int = 85
+    min_payout: int = 92
     candle_period: int = 60          
     trade_duration: int = 60          
     ema_period: int = 20

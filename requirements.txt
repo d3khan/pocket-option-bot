@@ -7,3 +7,5 @@ itsdangerous
 jinja2
 python-multipart
 websockets
+ta-lib
+numpy

@@ -4,6 +4,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 from collections import deque
 
+import talib
+import numpy as np
+
 from client import POClient
 from config import settings
 
@@ -88,7 +91,7 @@ class TradingBot:
         self._eligible_assets.sort(key=lambda x: x["payout"], reverse=True)
         logger.info(f"Eligible OTC assets (payout >= {settings.min_payout}%): {len(self._eligible_assets)}")
 
-    # ---------- RSI / EMA calculation ----------
+    # ---------- Local indicator helpers (fallback) ----------
     def _compute_ema(self, prices: list, period: int = 20) -> float:
         prices = [float(p) for p in prices]
         if len(prices) < period:
@@ -103,38 +106,61 @@ class TradingBot:
         prices = [float(p) for p in prices]
         if len(prices) < period + 1:
             return 50.0
-
         deltas = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
         gains = [max(delta, 0.0) for delta in deltas]
         losses = [abs(min(delta, 0.0)) for delta in deltas]
-
         avg_gain = sum(gains[:period]) / period
         avg_loss = sum(losses[:period]) / period
-
         for i in range(period, len(deltas)):
             avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
             avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
-
         if avg_loss == 0:
             return 100.0
         if avg_gain == 0:
             return 0.0
-
         rs = avg_gain / avg_loss
         return 100.0 - (100.0 / (1.0 + rs))
 
+    # ---------- Indicator fetching (Pocket Option + TA-Lib) ----------
     async def _fetch_asset_indicators(self, symbol: str) -> tuple[float, float, list]:
+        """Fetch up to 1440 candles (1 day) from Pocket Option, compute RSI/EMA with TA-Lib."""
+        period = settings.candle_period  # 60 seconds
+        # Request as many as possible (the API may limit, but we'll take what we get)
+        try:
+            # Fetch candles from the most recent (offset=0) – returns up to ~1000 candles typically.
+            candles = await self.client.get_candles(symbol, period=period, offset=(4*60*60))
+            if len(candles) < 30:
+                logger.warning(f"Not enough candles from Pocket Option for {symbol} (got {len(candles)}), using local fallback")
+                return await self._local_indicators(symbol)
+            closes = [float(c['close']) for c in candles]
+            # Use TA-Lib
+            close_array = np.array(closes, dtype=float)
+            rsi = talib.RSI(close_array, timeperiod=settings.rsi_period)[-1]
+            ema = talib.EMA(close_array, timeperiod=settings.ema_period)[-1]
+            if np.isnan(rsi) or np.isnan(ema):
+                logger.warning(f"TA-Lib returned NaN for {symbol}, using local fallback")
+                return await self._local_indicators(symbol)
+            logger.debug(f"📊 {symbol}: RSI={rsi:.2f}, EMA={ema:.5f} (using {len(closes)} candles)")
+            return float(rsi), float(ema), closes
+        except Exception as e:
+            logger.error(f"Error fetching indicators for {symbol}: {e}")
+            return await self._local_indicators(symbol)
+
+    async def _local_indicators(self, symbol: str) -> tuple[float, float, list]:
+        """Fallback: fetch last 20 candles from Pocket Option and compute locally."""
         period = settings.candle_period
         offset = 20 * period
         candles = await self.client.get_candles(symbol, period=period, offset=offset)
         if len(candles) < 20:
-            logger.warning(f"Only {len(candles)} candles for {symbol}, cannot compute indicators")
+            logger.warning(f"Not enough local data for {symbol}")
             return 50.0, 0.0, []
         closes = [float(c['close']) for c in candles[-20:]]
         ema = self._compute_ema(closes, settings.ema_period)
         rsi = self._compute_rsi(closes, settings.rsi_period)
+        logger.debug(f"📊 Local {symbol}: RSI={rsi:.2f}, EMA={ema:.5f}")
         return rsi, ema, closes
 
+    # ---------- Score and asset selection ----------
     def _compute_score(self, rsi: float, ema: float, price: float) -> float:
         rsi_gap = abs(rsi - 50)
         price_diff = abs(price - ema) / (ema or 1)
@@ -225,17 +251,19 @@ class TradingBot:
                     direction = "CALL"
                 elif ((rsi < 40.0) and (closes[-1] < ema)):
                     direction = "PUT"
+                else:
+                    logger.warning("No clear signal (RSI between 40 and 60), skipping this candle")
+                    await asyncio.sleep(2)
+                    continue
 
                 # ----- PRECISE TIMER -----
                 now = datetime.now(timezone.utc)
-                # Seconds until next minute start
                 seconds_until_next_minute = 60 - now.second
-                # Adjust for microseconds to land exactly on the start of the minute
                 if now.microsecond > 0:
                     seconds_until_next_minute -= 1
                 wait_time = max(seconds_until_next_minute, 0.5)
                 logger.info(f"⏳ Waiting {wait_time:.2f} seconds for next candle start...")
-                await asyncio.sleep(wait_time)
+                await asyncio.sleep(wait_time + 3)
 
                 # ----- PLACE TRADE -----
                 logger.info(f"💹 Placing trade: {direction} on {self._current_asset}")
