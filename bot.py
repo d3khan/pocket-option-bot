@@ -1,14 +1,16 @@
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from collections import deque
 
-import talib
+import yfinance as yf
 import numpy as np
+import pandas as pd
 
 from client import POClient
 from config import settings
+from signals import generate_loose_signals
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +21,7 @@ class TradingBot:
         self._ready = False
         self._task: Optional[asyncio.Task] = None
         self._current_asset: Optional[str] = None
-        self._eligible_assets: list = []
-        self._recent_trades = deque(maxlen=10)
+        self._eligible_assets: List[Dict[str, Any]] = []  # list of {"symbol": str, "payout": float}
 
         # Risk state (martingale)
         self.stake = settings.base_stake
@@ -78,138 +79,123 @@ class TradingBot:
 
     # ---------- Asset Management ----------
     async def _scan_assets(self):
+        """Refresh asset list with symbol and payout."""
         assets = await self.client.get_assets()
         self._eligible_assets = []
         for symbol, info in assets.items():
-            if info.get("is_otc") is not True:
-                continue
             if info.get("is_active") is False:
                 continue
-            payout = info.get("payout", 0)
-            if payout >= settings.min_payout:
-                self._eligible_assets.append({"symbol": symbol, "payout": payout})
-        self._eligible_assets.sort(key=lambda x: x["payout"], reverse=True)
-        logger.info(f"Eligible OTC assets (payout >= {settings.min_payout}%): {len(self._eligible_assets)}")
-
-    # ---------- Local indicator helpers (fallback) ----------
-    def _compute_ema(self, prices: list, period: int = 20) -> float:
-        prices = [float(p) for p in prices]
-        if len(prices) < period:
-            return prices[-1] if prices else 0.0
-        k = 2.0 / (period + 1)
-        ema = sum(prices[:period]) / period
-        for price in prices[period:]:
-            ema = price * k + ema * (1 - k)
-        return ema
-
-    def _compute_rsi(self, prices: list, period: int = 14) -> float:
-        prices = [float(p) for p in prices]
-        if len(prices) < period + 1:
-            return 50.0
-        deltas = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
-        gains = [max(delta, 0.0) for delta in deltas]
-        losses = [abs(min(delta, 0.0)) for delta in deltas]
-        avg_gain = sum(gains[:period]) / period
-        avg_loss = sum(losses[:period]) / period
-        for i in range(period, len(deltas)):
-            avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
-            avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
-        if avg_loss == 0:
-            return 100.0
-        if avg_gain == 0:
-            return 0.0
-        rs = avg_gain / avg_loss
-        return 100.0 - (100.0 / (1.0 + rs))
-
-    # ---------- Indicator fetching (Pocket Option + TA-Lib) ----------
-    async def _fetch_asset_indicators(self, symbol: str) -> tuple[float, float, list]:
-        """Fetch up to 1440 candles (1 day) from Pocket Option, compute RSI/EMA with TA-Lib."""
-        period = settings.candle_period  # 60 seconds
-        # Request as many as possible (the API may limit, but we'll take what we get)
-        try:
-            # Fetch candles from the most recent (offset=0) – returns up to ~1000 candles typically.
-            candles = await self.client.get_candles(symbol, period=period, offset=(4*60*60))
-            if len(candles) < 30:
-                logger.warning(f"Not enough candles from Pocket Option for {symbol} (got {len(candles)}), using local fallback")
-                return await self._local_indicators(symbol)
-            closes = [float(c['close']) for c in candles]
-            # Use TA-Lib
-            close_array = np.array(closes, dtype=float)
-            rsi = talib.RSI(close_array, timeperiod=settings.rsi_period)[-1]
-            ema = talib.EMA(close_array, timeperiod=settings.ema_period)[-1]
-            if np.isnan(rsi) or np.isnan(ema):
-                logger.warning(f"TA-Lib returned NaN for {symbol}, using local fallback")
-                return await self._local_indicators(symbol)
-            logger.debug(f"📊 {symbol}: RSI={rsi:.2f}, EMA={ema:.5f} (using {len(closes)} candles)")
-            return float(rsi), float(ema), closes
-        except Exception as e:
-            logger.error(f"Error fetching indicators for {symbol}: {e}")
-            return await self._local_indicators(symbol)
-
-    async def _local_indicators(self, symbol: str) -> tuple[float, float, list]:
-        """Fallback: fetch last 20 candles from Pocket Option and compute locally."""
-        period = settings.candle_period
-        offset = 20 * period
-        candles = await self.client.get_candles(symbol, period=period, offset=offset)
-        if len(candles) < 20:
-            logger.warning(f"Not enough local data for {symbol}")
-            return 50.0, 0.0, []
-        closes = [float(c['close']) for c in candles[-20:]]
-        ema = self._compute_ema(closes, settings.ema_period)
-        rsi = self._compute_rsi(closes, settings.rsi_period)
-        logger.debug(f"📊 Local {symbol}: RSI={rsi:.2f}, EMA={ema:.5f}")
-        return rsi, ema, closes
-
-    # ---------- Score and asset selection ----------
-    def _compute_score(self, rsi: float, ema: float, price: float) -> float:
-        rsi_gap = abs(rsi - 50)
-        price_diff = abs(price - ema) / (ema or 1)
-        return rsi_gap + price_diff * 50
-
-    async def _pick_best_asset(self) -> Optional[Dict]:
-        if not self._eligible_assets:
-            await self._scan_assets()
-            if not self._eligible_assets:
-                return None
-
-        best_score = -1
-        best_asset = None
-        best_rsi = 50
-        best_ema = 0.0
-        best_price = 0.0
-
-        for a in self._eligible_assets:
-            symbol = a["symbol"]
-            if symbol in self._recent_trades:
+            if info.get("is_otc") is True:
                 continue
-            try:
-                rsi, ema, closes = await self._fetch_asset_indicators(symbol)
-                if not closes:
-                    continue
-                price = closes[-1]
-                score = self._compute_score(rsi, ema, price)
-                logger.debug(f"📊 {symbol}: RSI={rsi:.2f}, EMA={ema:.5f}, price={price:.5f}, score={score:.2f}")
-                if score > best_score:
-                    best_score = score
-                    best_asset = {"symbol": symbol, "payout": a["payout"]}
-                    best_rsi = rsi
-                    best_ema = ema
-                    best_price = price
-            except Exception as e:
-                logger.error(f"Error fetching indicators for {symbol}: {e}")
+            payout = info.get("payout", 0)
+            self._eligible_assets.append({"symbol": symbol, "payout": payout})
+        logger.info(f"Active non‑OTC assets: {len(self._eligible_assets)}")
 
-        if best_asset:
-            logger.info(f"🏆 Best asset: {best_asset['symbol']} with score {best_score:.2f} (RSI={best_rsi:.2f}, EMA={best_ema:.5f}, price={best_price:.5f})")
-            return {
-                "symbol": best_asset["symbol"],
-                "rsi": best_rsi,
-                "ema": best_ema,
-                "price": best_price,
-                "score": best_score,
-            }
-        else:
-            logger.error("No asset could be scored.")
+    # ---------- Yahoo Finance symbol mapping ----------
+    def _map_symbol(self, symbol: str) -> str:
+        base = symbol.replace("_otc", "").replace("-OTC", "")
+        # Crypto
+        crypto_list = [
+            "BTC", "ETH", "LTC", "DOGE", "SOL", "ADA", "XRP", "BNB",
+            "MATIC", "LINK", "DOT", "AVAX", "UNI", "ATOM", "SHIB",
+            "TRX", "XLM", "VET", "THETA", "FIL", "ICP", "ETC", "AAVE",
+            "MKR", "COMP", "ZEC", "XMR", "DASH", "NEO", "EOS", "XTZ"
+        ]
+        for crypto in crypto_list:
+            if crypto in base:
+                return base.replace("USD", "-USD")
+        # Forex
+        if len(base) == 6 and base.isalpha():
+            return f"{base}=X"
+        # Indices
+        index_map = {
+            "SPX500": "^GSPC", "NAS100": "^IXIC", "US30": "^DJI",
+            "DAX40": "^GDAXI", "FTSE100": "^FTSE", "CAC40": "^FCHI",
+            "JPN225": "^N225", "AUS200": "^AXJO", "EUSTX50": "^STOXX50E",
+            "HSI50": "^HSI", "VIX": "^VIX", "RUT": "^RUT", "NDX": "^NDX"
+        }
+        for po_symbol, yf_symbol in index_map.items():
+            if po_symbol in base:
+                return yf_symbol
+        # Commodities
+        commodity_map = {
+            "XAUUSD": "GC=F", "XAGUSD": "SI=F", "USOIL": "CL=F",
+            "UKOIL": "BZ=F", "NGAS": "NG=F", "PLATINUM": "PL=F",
+            "PALLADIUM": "PA=F", "COPPER": "HG=F"
+        }
+        for po_symbol, yf_symbol in commodity_map.items():
+            if po_symbol in base:
+                return yf_symbol
+        # Stocks / ETFs
+        return base.split(" ")[0].split("/")[0]
+
+    # ---------- Simplified DataFrame sanitizer ----------
+    def _sanitize_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.columns = [c.lower() for c in df.columns]
+        for col in ['open', 'high', 'low', 'close']:
+            if col not in df.columns:
+                raise ValueError(f"Missing required column: {col}")
+        return df
+
+    # ---------- Signal fetch (1m only) ----------
+    async def _fetch_signal_for_asset(self, symbol: str) -> Optional[Dict]:
+        yf_symbol = self._map_symbol(symbol)
+        try:
+            df_1m = yf.download(
+                yf_symbol,
+                period="2d",
+                interval="1m",
+                progress=False,
+                auto_adjust=False,
+                multi_level_index=False
+            )
+            if df_1m.empty or len(df_1m) < 30:
+                logger.debug(f"Not enough data for {symbol}")
+                return None
+            df_1m = self._sanitize_df(df_1m)
+            signal_info = generate_loose_signals(df_1m)
+            if signal_info["signal"] == "NONE":
+                return None
+            signal_info["symbol"] = symbol
+            # No scoring anymore – just return signal
+            return signal_info
+        except Exception as e:
+            logger.warning(f"Signal error for {symbol}: {e}")
             return None
+
+    # ---------- Asset Selection (refresh + highest payout) ----------
+    async def _pick_best_asset(self) -> Optional[Dict]:
+        # Refresh asset list before each scan
+        await self._scan_assets()
+        if not self._eligible_assets:
+            return None
+
+        # Collect all assets with valid signals
+        candidates = []
+        for asset in self._eligible_assets:
+            symbol = asset["symbol"]
+            signal_info = await self._fetch_signal_for_asset(symbol)
+            if signal_info:
+                candidates.append({
+                    "symbol": symbol,
+                    "payout": asset["payout"],
+                    "signal": signal_info["signal"],
+                    "info": signal_info,
+                })
+            await asyncio.sleep(0.1)
+
+        if not candidates:
+            logger.info("No valid signals found.")
+            return None
+
+        # Pick the candidate with the highest payout
+        best = max(candidates, key=lambda x: x["payout"])
+        logger.info(f"🏆 Best asset: {best['symbol']} (payout: {best['payout']}%) signal: {best['signal']}")
+        return best["info"]
 
     # ---------- Trading ----------
     async def start_trading(self):
@@ -235,38 +221,28 @@ class TradingBot:
     async def _trade_loop(self):
         while self._running:
             try:
-                logger.info("🔍 Polling assets to pick the best one...")
-                asset_info = await self._pick_best_asset()
-                if not asset_info:
-                    logger.error("No assets available, waiting 10s...")
+                logger.info("🔍 Scanning for signals...")
+                signal_info = await self._pick_best_asset()
+                if not signal_info:
+                    logger.warning("No signal, waiting 10s...")
                     await asyncio.sleep(10)
                     continue
 
-                self._current_asset = asset_info["symbol"]
-                logger.info(f"🎯 Selected asset: {self._current_asset} (RSI={asset_info['rsi']:.2f}, EMA={asset_info['ema']:.5f}, price={asset_info['price']:.5f})")
-                
-                symbol = self._current_asset
-                rsi, ema, closes = await self._fetch_asset_indicators(symbol)
-                if ((rsi > 60.0) and (closes[-1] > ema)):
-                    direction = "CALL"
-                elif ((rsi < 40.0) and (closes[-1] < ema)):
-                    direction = "PUT"
-                else:
-                    logger.warning("No clear signal (RSI between 40 and 60), skipping this candle")
-                    await asyncio.sleep(2)
-                    continue
+                self._current_asset = signal_info["symbol"]
+                direction = signal_info["signal"]  # "CALL" or "PUT"
 
-                # ----- PRECISE TIMER -----
+                logger.info(f"🎯 Selected asset: {self._current_asset} ({direction})")
+
+                # Wait for next minute start
                 now = datetime.now(timezone.utc)
-                seconds_until_next_minute = 60 - now.second
+                seconds_to_next_minute = 60 - now.second
                 if now.microsecond > 0:
-                    seconds_until_next_minute -= 1
-                wait_time = max(seconds_until_next_minute, 0.5)
-                logger.info(f"⏳ Waiting {wait_time:.2f} seconds for next candle start...")
+                    seconds_to_next_minute -= 1
+                wait_time = max(seconds_to_next_minute, 0.5)
+                logger.info(f"⏳ Waiting {wait_time:.2f}s for next candle start...")
                 await asyncio.sleep(wait_time)
 
-                # ----- PLACE TRADE -----
-                logger.info(f"💹 Placing trade: {direction} on {self._current_asset}")
+                logger.info(f"💹 Placing trade: {direction} on {self._current_asset} for {settings.trade_duration}s with ${self.stake}")
                 result = await self.client.place_trade(
                     self._current_asset, direction, self.stake, settings.trade_duration, check_win=True
                 )
@@ -294,7 +270,6 @@ class TradingBot:
 
                     self.total_pnl += trade["pnl"]
                     self.daily_pnl += trade["pnl"]
-                    self._recent_trades.append(self._current_asset)
 
                     if win:
                         self.wins += 1
@@ -310,7 +285,6 @@ class TradingBot:
                     logger.info(f"✅ Trade {trade['result']}: {direction} {self._current_asset} {self.stake:.2f} P&L: {trade['pnl']:.2f}")
                     await self.client.refresh_balance()
                     self.balance = self.client.balance
-                    await asyncio.sleep(2)
                 else:
                     logger.error("❌ Trade placement failed – no result object returned")
                     await asyncio.sleep(5)
@@ -354,5 +328,4 @@ class TradingBot:
         self.wins = 0
         self.losses = 0
         self.trade_history = []
-        self._recent_trades.clear()
         self._current_asset = None
