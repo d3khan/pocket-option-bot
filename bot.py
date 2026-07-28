@@ -79,17 +79,16 @@ class TradingBot:
 
     # ---------- Asset Management ----------
     async def _scan_assets(self):
-        """Refresh asset list with symbol and payout."""
+        """Refresh asset list with symbol and payout (both OTC and non‑OTC)."""
         assets = await self.client.get_assets()
         self._eligible_assets = []
         for symbol, info in assets.items():
             if info.get("is_active") is False:
                 continue
-            if info.get("is_otc") is True:
-                continue
+            # No OTC filter – include all active assets
             payout = info.get("payout", 0)
             self._eligible_assets.append({"symbol": symbol, "payout": payout})
-        logger.info(f"Active non‑OTC assets: {len(self._eligible_assets)}")
+        logger.info(f"Active assets (including OTC): {len(self._eligible_assets)}")
 
     # ---------- Yahoo Finance symbol mapping ----------
     def _map_symbol(self, symbol: str) -> str:
@@ -161,28 +160,32 @@ class TradingBot:
             if signal_info["signal"] == "NONE":
                 return None
             signal_info["symbol"] = symbol
-            # No scoring anymore – just return signal
             return signal_info
         except Exception as e:
             logger.warning(f"Signal error for {symbol}: {e}")
             return None
 
-    # ---------- Asset Selection (refresh + highest payout) ----------
+    # ---------- Asset Selection (refresh + combined score) ----------
     async def _pick_best_asset(self) -> Optional[Dict]:
         # Refresh asset list before each scan
         await self._scan_assets()
         if not self._eligible_assets:
             return None
 
-        # Collect all assets with valid signals
         candidates = []
         for asset in self._eligible_assets:
             symbol = asset["symbol"]
             signal_info = await self._fetch_signal_for_asset(symbol)
             if signal_info:
+                # Compute combined score: payout * strength
+                payout = asset["payout"]
+                strength = signal_info.get("strength", 0)
+                score = payout * strength
                 candidates.append({
                     "symbol": symbol,
-                    "payout": asset["payout"],
+                    "payout": payout,
+                    "strength": strength,
+                    "score": score,
                     "signal": signal_info["signal"],
                     "info": signal_info,
                 })
@@ -192,9 +195,13 @@ class TradingBot:
             logger.info("No valid signals found.")
             return None
 
-        # Pick the candidate with the highest payout
-        best = max(candidates, key=lambda x: x["payout"])
-        logger.info(f"🏆 Best asset: {best['symbol']} (payout: {best['payout']}%) signal: {best['signal']}")
+        # Pick the candidate with the highest combined score
+        best = max(candidates, key=lambda x: x["score"])
+        logger.info(
+            f"🏆 Best asset: {best['symbol']} (payout: {best['payout']}%, "
+            f"strength: {best['strength']:.3f}, score: {best['score']:.3f}) "
+            f"signal: {best['signal']}"
+        )
         return best["info"]
 
     # ---------- Trading ----------
