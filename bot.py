@@ -4,7 +4,6 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 from collections import deque
 
-import yfinance as yf
 import numpy as np
 import pandas as pd
 
@@ -90,80 +89,48 @@ class TradingBot:
             self._eligible_assets.append({"symbol": symbol, "payout": payout})
         logger.info(f"Active assets (including OTC): {len(self._eligible_assets)}")
 
-    # ---------- Yahoo Finance symbol mapping ----------
-    def _map_symbol(self, symbol: str) -> str:
-        base = symbol.replace("_otc", "").replace("-OTC", "")
-        # Crypto
-        crypto_list = [
-            "BTC", "ETH", "LTC", "DOGE", "SOL", "ADA", "XRP", "BNB",
-            "MATIC", "LINK", "DOT", "AVAX", "UNI", "ATOM", "SHIB",
-            "TRX", "XLM", "VET", "THETA", "FIL", "ICP", "ETC", "AAVE",
-            "MKR", "COMP", "ZEC", "XMR", "DASH", "NEO", "EOS", "XTZ"
-        ]
-        for crypto in crypto_list:
-            if crypto in base:
-                return base.replace("USD", "-USD")
-        # Forex
-        if len(base) == 6 and base.isalpha():
-            return f"{base}=X"
-        # Indices
-        index_map = {
-            "SPX500": "^GSPC", "NAS100": "^IXIC", "US30": "^DJI",
-            "DAX40": "^GDAXI", "FTSE100": "^FTSE", "CAC40": "^FCHI",
-            "JPN225": "^N225", "AUS200": "^AXJO", "EUSTX50": "^STOXX50E",
-            "HSI50": "^HSI", "VIX": "^VIX", "RUT": "^RUT", "NDX": "^NDX"
-        }
-        for po_symbol, yf_symbol in index_map.items():
-            if po_symbol in base:
-                return yf_symbol
-        # Commodities
-        commodity_map = {
-            "XAUUSD": "GC=F", "XAGUSD": "SI=F", "USOIL": "CL=F",
-            "UKOIL": "BZ=F", "NGAS": "NG=F", "PLATINUM": "PL=F",
-            "PALLADIUM": "PA=F", "COPPER": "HG=F"
-        }
-        for po_symbol, yf_symbol in commodity_map.items():
-            if po_symbol in base:
-                return yf_symbol
-        # Stocks / ETFs
-        return base.split(" ")[0].split("/")[0]
-
-    # ---------- Simplified DataFrame sanitizer ----------
-    def _sanitize_df(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df.empty:
-            return df
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df.columns = [c.lower() for c in df.columns]
-        for col in ['open', 'high', 'low', 'close']:
-            if col not in df.columns:
-                raise ValueError(f"Missing required column: {col}")
-        return df
-
-    # ---------- Signal fetch (1m only) ----------
-    async def _fetch_signal_for_asset(self, symbol: str) -> Optional[Dict]:
-        yf_symbol = self._map_symbol(symbol)
+    # ---------- Fetch candles from Pocket Option ----------
+    async def _fetch_candles_for_asset(self, symbol: str, period_sec: int = 60, count: int = 30) -> Optional[pd.DataFrame]:
+        """Fetch candles from Pocket Option using get_candles and return a DataFrame."""
         try:
-            df_1m = yf.download(
-                yf_symbol,
-                period="2d",
-                interval="1m",
-                progress=False,
-                auto_adjust=False,
-                multi_level_index=False
-            )
-            if df_1m.empty or len(df_1m) < 30:
-                logger.debug(f"Not enough data for {symbol}")
+            # offset = count * period_sec (to get the last 'count' candles)
+            offset = count * period_sec
+            candles = await self.client.get_candles(symbol, period=period_sec, offset=offset)
+            if not candles or len(candles) < 10:  # need at least 10 for indicators
+                logger.debug(f"Not enough PO candles for {symbol} (got {len(candles)})")
                 return None
-            df_1m = self._sanitize_df(df_1m)
-            signal_info = generate_loose_signals(df_1m)
-            if signal_info["signal"] == "NONE":
+            # Convert to DataFrame
+            df = pd.DataFrame(candles)
+            # Expected keys: 'timestamp', 'open', 'high', 'low', 'close', 'volume'
+            if 'timestamp' not in df.columns:
+                logger.debug(f"Missing timestamp in PO candles for {symbol}")
                 return None
-            signal_info["symbol"] = symbol
-            return signal_info
+            df.rename(columns={'timestamp': 'time'}, inplace=True)
+            # Ensure numeric types
+            for col in ['open', 'high', 'low', 'close']:
+                if col in df.columns:
+                    df[col] = df[col].astype(float)
+                else:
+                    logger.debug(f"Missing {col} in PO candles for {symbol}")
+                    return None
+            # Sort by time and take last 'count'
+            df = df.sort_values('time').tail(count)
+            return df
         except Exception as e:
-            logger.warning(f"Signal error for {symbol}: {e}")
+            logger.warning(f"Error fetching PO candles for {symbol}: {e}")
             return None
+
+    # ---------- Signal fetch ----------
+    async def _fetch_signal_for_asset(self, symbol: str) -> Optional[Dict]:
+        df = await self._fetch_candles_for_asset(symbol, period_sec=60, count=30)
+        if df is None:
+            return None
+        # Pass to signal generator (it expects 'open', 'high', 'low', 'close')
+        signal_info = generate_loose_signals(df)
+        if signal_info["signal"] == "NONE":
+            return None
+        signal_info["symbol"] = symbol
+        return signal_info
 
     # ---------- Asset Selection (refresh + combined score) ----------
     async def _pick_best_asset(self) -> Optional[Dict]:
@@ -177,7 +144,6 @@ class TradingBot:
             symbol = asset["symbol"]
             signal_info = await self._fetch_signal_for_asset(symbol)
             if signal_info:
-                # Compute combined score: payout * strength
                 payout = asset["payout"]
                 strength = signal_info.get("strength", 0)
                 score = payout * strength
@@ -189,7 +155,7 @@ class TradingBot:
                     "signal": signal_info["signal"],
                     "info": signal_info,
                 })
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.1)  # rate limit
 
         if not candidates:
             logger.info("No valid signals found.")
