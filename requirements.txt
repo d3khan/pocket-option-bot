@@ -9,4 +9,9 @@ python-multipart
 websockets
 ta-lib
 numpy
-yfinance
+pandas
+requests
+python-dateutil
+tzlocal
+colorama
+pywebview

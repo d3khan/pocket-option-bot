@@ -1,11 +1,11 @@
 import asyncio
 import logging
 from typing import Optional, Dict, Any
-from datetime import timedelta
 
 from BinaryOptionsToolsV2 import PocketOptionAsync
 
 logger = logging.getLogger(__name__)
+
 
 class POClient:
     def __init__(self, ssid: str):
@@ -66,6 +66,19 @@ class POClient:
             logger.error(f"Assets error: {e}")
             return {}
 
+    async def get_all_payouts(self) -> Dict[str, int]:
+        """Fetch payout % for all assets at once."""
+        if not self.is_connected:
+            return {}
+        try:
+            result = await self._client.payout()
+            if isinstance(result, dict):
+                return result
+            return {}
+        except Exception as e:
+            logger.error(f"All payouts error: {e}")
+            return {}
+
     async def get_payout(self, asset: str) -> int:
         if not self.is_connected:
             return 0
@@ -110,10 +123,10 @@ class POClient:
             return []
 
     async def subscribe_candles(self, asset: str, callback, period: int = 60):
-        """Subscribe to candles with custom period."""
         if not self.is_connected:
             return
         try:
+            from datetime import timedelta
             sub = await self._client.subscribe_symbol_time_aligned(asset, timedelta(seconds=period))
             async for candle in sub:
                 await callback(candle)

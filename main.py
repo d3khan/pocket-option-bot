@@ -13,6 +13,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from config import settings
 from client import POClient
+from candle_client import CandleClient
 from bot import TradingBot
 
 # Suppress uvicorn access logs
@@ -27,10 +28,11 @@ Path("data").mkdir(exist_ok=True)
 
 # Globals
 client = POClient(settings.ssid)
-bot = TradingBot(client)
+candle_client = CandleClient()
+bot = TradingBot(client, candle_client)
 
 # Connection status tracking
-connection_status = "disconnected"  # disconnected, connecting, connected, failed
+connection_status = "disconnected"
 connection_error = None
 
 app = FastAPI(title="Pocket Bot Simple")
@@ -103,14 +105,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(AuthMiddleware)
 
-# ---------- Lifespan (no auto‑connect) ----------
+# ---------- Lifespan ----------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 Application starting – no auto‑connect")
+    logger.info("🚀 Application starting")
+    # Pre-connect the candle client (reverse-engineered data API)
+    cc_ok = await candle_client.connect()
+    if not cc_ok:
+        logger.error("❌ Candle client failed to connect on startup")
     yield
-    logger.info("🛑 Application shutting down, disconnecting...")
+    logger.info("🛑 Application shutting down...")
     await bot.disconnect()
-    logger.info("✅ Application shutdown complete")
+    logger.info("✅ Shutdown complete")
 
 app.router.lifespan_context = lifespan
 
@@ -141,7 +147,7 @@ async def logout(request: Request, response: Response):
     clear_session_cookie(response)
     bot.reset_stats()
     await bot.disconnect()
-    return RedirectResponse(url="/login", status_code=303)
+    return RedirectResponse("/login", status_code=303)
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
@@ -153,7 +159,6 @@ async def background_connect():
     try:
         logger.info("🌐 [BG] Starting background connection...")
         connection_status = "connecting"
-        logger.info("🌐 [BG] Calling bot.connect()...")
         success = await bot.connect()
         if success:
             connection_status = "connected"
@@ -173,15 +178,11 @@ async def connect():
     global connection_status, connection_error
     logger.info("📡 API /api/connect called")
     if connection_status == "connecting":
-        logger.warning("📡 API /api/connect: Already connecting, ignoring.")
         return {"status": "already connecting"}
     if connection_status == "connected":
-        logger.warning("📡 API /api/connect: Already connected.")
         return {"status": "already connected"}
     connection_error = None
-    logger.info("📡 API /api/connect: Starting background connection...")
     asyncio.create_task(background_connect())
-    logger.info("📡 API /api/connect: Background task started, returning immediately.")
     return {"status": "connecting"}
 
 @app.post("/api/start")
@@ -189,17 +190,12 @@ async def start_trading():
     global connection_status
     logger.info("📡 API /api/start called")
     if connection_status != "connected":
-        logger.warning("📡 API /api/start: Not connected (status=%s)", connection_status)
         return {"status": "not connected", "detail": f"Connection status: {connection_status}"}
     if not bot._ready:
-        logger.warning("📡 API /api/start: Bot not ready (assets not loaded)")
         return {"status": "not ready", "detail": "Bot still initializing, please wait."}
     if bot._running:
-        logger.warning("📡 API /api/start: Bot already running")
         return {"status": "already running"}
-    logger.info("📡 API /api/start: Calling bot.start_trading()...")
     await bot.start_trading()
-    logger.info("📡 API /api/start: start_trading() completed.")
     return {"status": "started"}
 
 @app.post("/api/stop")
@@ -207,11 +203,8 @@ async def stop_trading():
     logger.info("📡 API /api/stop called")
     if bot._running:
         await bot.stop_trading()
-        logger.info("📡 API /api/stop: Trading stopped.")
         return {"status": "stopped"}
-    else:
-        logger.warning("📡 API /api/stop: Bot not running")
-        return {"status": "not running"}
+    return {"status": "not running"}
 
 @app.get("/api/status")
 async def status():
@@ -220,7 +213,6 @@ async def status():
     stats["connection_status"] = connection_status
     if connection_error:
         stats["connection_error"] = connection_error
-    logger.debug(f"📡 API /api/status: stats ok (conn={connection_status})")
     return stats
 
 if __name__ == "__main__":
