@@ -64,9 +64,9 @@ def generate_loose_signals(df: pd.DataFrame):
     latest = df.iloc[-1]
     signal = "NONE"
     if latest["buy_signal"]:
-        signal = "PUT"
-    elif latest["sell_signal"]:
         signal = "CALL"
+    elif latest["sell_signal"]:
+        signal = "PUT"
 
     return {
         "signal": signal,
