@@ -10,7 +10,7 @@ import pandas as pd
 
 from client import POClient
 from config import settings
-from signals import generate_loose_signals
+from signals import signal
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ class TradingBot:
                 logger.debug(f"Not enough data for {symbol}")
                 return None
             df_1m = self._sanitize_df(df_1m)
-            signal_info = generate_loose_signals(df_1m)
+            signal_info = signal(df_1m)
             if signal_info["signal"] == "NONE":
                 return None
             signal_info["symbol"] = symbol
