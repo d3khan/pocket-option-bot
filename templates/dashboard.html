@@ -77,11 +77,15 @@
                 <label for="assetSelect">Asset</label>
                 <select id="assetSelect" onchange="selectAsset(this.value)">
                     <option value="auto" {% if not manual_asset %}selected{% endif %}>Auto (switches)</option>
-                    {% for a in assets %}
-                        <option value="{{ a.symbol }}" {% if manual_asset == a.symbol %}selected{% endif %}>
-                            {{ a.symbol }} ({{ a.payout }}%)
-                        </option>
-                    {% endfor %}
+                    {% if assets %}
+                        {% for a in assets %}
+                            <option value="{{ a.symbol }}" {% if manual_asset == a.symbol %}selected{% endif %}>
+                                {{ a.symbol }} ({{ a.payout }}%)
+                            </option>
+                        {% endfor %}
+                    {% else %}
+                        <option disabled>No assets found</option>
+                    {% endif %}
                 </select>
                 <span id="modeBadge" class="mode-badge">
                     {% if manual_asset %}
@@ -166,6 +170,7 @@ header h1 {
     background: #1e293b;
     padding: 1rem;
     border-radius: 10px;
+    overflow: visible !important; /* ensure dropdown not clipped */
 }
 
 .control-row {
@@ -213,6 +218,7 @@ header h1 {
     gap: 0.5rem;
     flex: 1 1 240px;
     flex-wrap: wrap;
+    position: relative; /* for z-index if needed */
 }
 .asset-selector label {
     font-size: 0.85rem;
@@ -226,8 +232,13 @@ header h1 {
     border-radius: 6px;
     font-size: 0.85rem;
     flex: 1;
-    min-width: 100px;
-    /* Native scroll works when many options */
+    min-width: 120px;
+    max-height: 200px;
+    overflow-y: auto !important;   /* force scroll */
+}
+/* Fix for mobile: ensure the dropdown expands */
+.asset-selector select option {
+    padding: 0.3rem;
 }
 .mode-badge {
     display: inline-block;
@@ -271,6 +282,7 @@ header h1 {
     }
     .asset-selector select {
         min-width: 80px;
+        max-height: 150px;
     }
 }
 </style>
@@ -333,11 +345,14 @@ function updateUI(data) {
     const select = document.getElementById('assetSelect');
     const manual = data.manual_asset;
     if (manual && manual !== 'auto') {
-        select.value = manual;
+        if (Array.from(select.options).some(opt => opt.value === manual)) {
+            select.value = manual;
+        } else {
+            select.value = 'auto';
+        }
     } else {
         select.value = 'auto';
     }
-    // Update mode badge
     const modeBadge = document.getElementById('modeBadge');
     if (manual) {
         modeBadge.innerHTML = `<span class="badge manual">🔒 Manual</span>`;
@@ -346,7 +361,7 @@ function updateUI(data) {
     }
 }
 
-// ─── Actions (POST then re-poll) ──────────────────────
+// ─── Actions ────────────────────────────────────────────
 function doAction(url) {
     fetch(url, { method: 'POST' })
         .then(r => r.json())
@@ -367,8 +382,8 @@ function selectAsset(asset) {
         .catch(e => console.warn('Asset select error:', e));
 }
 
-// ─── Start polling ──────────────────────────────────────
+console.log('Assets loaded: {{ assets|length }}');
 setInterval(fetchStats, 500);
-fetchStats(); // immediate first update
+fetchStats();
 </script>
 {% endblock %}

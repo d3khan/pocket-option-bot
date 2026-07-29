@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -122,8 +122,7 @@ async def logout(request: Request, response: Response):
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     stats = bot.get_stats()
-    assets = bot.get_filtered_assets_for_display()
-    assets.sort(key=lambda x: x["payout"], reverse=True)
+    assets = bot.get_all_eur_usd_assets()   # all EUR/USD assets for dropdown
     return render_template(
         "dashboard.html",
         request=request,
@@ -176,4 +175,11 @@ app.router.lifespan_context = lifespan
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        access_log=False,
+        log_level="info"
+    )
