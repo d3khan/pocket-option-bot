@@ -1,110 +1,374 @@
 {% extends "base.html" %}
+
 {% block content %}
 <div class="dashboard">
     <header>
         <h1>Pocket Bot</h1>
         <form action="/logout" method="post" style="display:inline;">
-            <button type="submit" class="btn-danger">Logout</button>
+            <button type="submit" class="btn-logout">Logout</button>
         </form>
     </header>
-    <main>
-        <section id="stats">Loading stats...</section>
-        <section id="control" hx-get="/partials/control" hx-trigger="load, every 5s" hx-swap="innerHTML">
-            Loading controls...
-        </section>
-    </main>
+
+    <!-- Stats Grid -->
+    <section class="stats-grid" id="statsGrid">
+        <div class="stat-card">
+            <span class="stat-label">Balance</span>
+            <span class="stat-value" id="balance">{{ stats.balance|currency }}</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">P/L</span>
+            <span class="stat-value" id="totalPnl">{{ stats.total_pnl|currency }}</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Win Rate</span>
+            <span class="stat-value" id="winRate">{{ stats.win_rate }}%</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Stake</span>
+            <span class="stat-value" id="stake">{{ stats.current_stake|currency }}</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Loss Streak</span>
+            <span class="stat-value" id="lossStreak">{{ stats.consecutive_losses }}</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Asset</span>
+            <span class="stat-value" id="assetName">{{ stats.current_asset or 'None' }}</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Payout</span>
+            <span class="stat-value" id="payout">{{ stats.current_payout }}%</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Candle</span>
+            <span class="stat-value" id="candleInfo">
+                {% if stats.candle_color == 'GREEN' %}
+                    <span style="color:#22c55e;">● GREEN</span>
+                {% elif stats.candle_color == 'RED' %}
+                    <span style="color:#ef4444;">● RED</span>
+                {% else %}
+                    {{ stats.candle_color }}
+                {% endif %}
+                <span id="secondsDisplay">{{ stats.seconds_into_candle }}</span>s
+            </span>
+        </div>
+    </section>
+
+    <!-- Controls Card -->
+    <section class="controls-card">
+        <div class="control-row">
+            <!-- Connection & Trading buttons -->
+            <div class="button-group" id="buttonGroup">
+                {% if not stats.connected %}
+                    <button class="btn btn-primary" id="connectBtn" onclick="doAction('/api/connect')">Connect</button>
+                {% else %}
+                    <span class="badge connected">✅ Connected</span>
+                    {% if not stats.running %}
+                        <button class="btn btn-success" id="startBtn" onclick="doAction('/api/start')">Start</button>
+                    {% else %}
+                        <button class="btn btn-danger" id="stopBtn" onclick="doAction('/api/stop')">Stop</button>
+                        <span class="badge running">▶ Running</span>
+                    {% endif %}
+                {% endif %}
+            </div>
+
+            <!-- Asset selector + Mode indicator -->
+            <div class="asset-selector">
+                <label for="assetSelect">Asset</label>
+                <select id="assetSelect" onchange="selectAsset(this.value)">
+                    <option value="auto" {% if not manual_asset %}selected{% endif %}>Auto (switches)</option>
+                    {% for a in assets %}
+                        <option value="{{ a.symbol }}" {% if manual_asset == a.symbol %}selected{% endif %}>
+                            {{ a.symbol }} ({{ a.payout }}%)
+                        </option>
+                    {% endfor %}
+                </select>
+                <span id="modeBadge" class="mode-badge">
+                    {% if manual_asset %}
+                        <span class="badge manual">🔒 Manual</span>
+                    {% else %}
+                        <span class="badge auto">🔄 Auto</span>
+                    {% endif %}
+                </span>
+            </div>
+        </div>
+
+        <!-- Quick stats row -->
+        <div class="quick-stats">
+            <span>Balance: <strong id="quickBalance">{{ stats.balance|currency }}</strong></span>
+            <span>Asset: <strong id="quickAsset">{{ stats.current_asset or 'None' }}</strong></span>
+            <span>Mode: <strong id="modeDisplay">{% if manual_asset %}Manual{% else %}Auto{% endif %}</strong></span>
+        </div>
+    </section>
 </div>
+
+<style>
+/* ─── Mobile-first styles ─── */
+.dashboard {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+}
+
+header h1 {
+    font-size: 1.5rem;
+    margin: 0;
+}
+
+.btn-logout {
+    background: #dc2626;
+    color: white;
+    border: none;
+    padding: 0.4rem 1rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+}
+
+.stat-card {
+    background: #1e293b;
+    padding: 0.75rem;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+}
+
+.stat-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    color: #94a3b8;
+    letter-spacing: 0.05em;
+}
+
+.stat-value {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #f1f5f9;
+    margin-top: 0.2rem;
+}
+
+.controls-card {
+    background: #1e293b;
+    padding: 1rem;
+    border-radius: 10px;
+}
+
+.control-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.button-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.btn {
+    padding: 0.4rem 1rem;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.btn-primary { background: #3b82f6; color: white; }
+.btn-success { background: #22c55e; color: white; }
+.btn-danger { background: #ef4444; color: white; }
+.btn:hover { opacity: 0.85; }
+
+.badge {
+    padding: 0.25rem 0.6rem;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+.badge.connected { background: #22c55e33; color: #22c55e; }
+.badge.running { background: #f59e0b33; color: #f59e0b; }
+.badge.manual { background: #3b82f633; color: #3b82f6; }
+.badge.auto { background: #8b5cf633; color: #8b5cf6; }
+
+.asset-selector {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1 1 240px;
+    flex-wrap: wrap;
+}
+.asset-selector label {
+    font-size: 0.85rem;
+    color: #94a3b8;
+}
+.asset-selector select {
+    background: #0f172a;
+    color: #f1f5f9;
+    border: 1px solid #334155;
+    padding: 0.3rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    flex: 1;
+    min-width: 100px;
+    /* Native scroll works when many options */
+}
+.mode-badge {
+    display: inline-block;
+    white-space: nowrap;
+}
+
+.quick-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    font-size: 0.85rem;
+    color: #94a3b8;
+    border-top: 1px solid #334155;
+    padding-top: 0.75rem;
+}
+.quick-stats strong {
+    color: #f1f5f9;
+}
+
+@media (min-width: 600px) {
+    .stats-grid {
+        grid-template-columns: repeat(4, 1fr);
+    }
+    .stat-value {
+        font-size: 1.2rem;
+    }
+}
+@media (max-width: 400px) {
+    .stat-card {
+        padding: 0.5rem;
+    }
+    .stat-value {
+        font-size: 0.9rem;
+    }
+    .control-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .asset-selector {
+        flex-wrap: wrap;
+    }
+    .asset-selector select {
+        min-width: 80px;
+    }
+}
+</style>
+
 <script>
-    (function() {
-        // --- Configuration ---
-        const POLL_INTERVAL_MS = 500; // 0.5 seconds
-        let usePolling = false;
-        let pollIntervalId = null;
+// ─── Polling ────────────────────────────────────────────
+function fetchStats() {
+    fetch('/api/status')
+        .then(r => r.ok ? r.json() : Promise.reject('HTTP error'))
+        .then(data => updateUI(data))
+        .catch(e => console.warn('Polling error:', e));
+}
 
-        // --- Update stats (matches your current stats layout) ---
-        function updateStats(data) {
-            const statsHtml = `
-                <div class="stats-grid">
-                    <div class="stat-card"><span>Balance: </span><span>$${data.balance.toFixed(2)}</span></div>
-                    <div class="stat-card"><span>Session P/L: </span><span>$${data.total_pnl.toFixed(2)}</span></div>
-                    <div class="stat-card"><span>Win Rate: </span><span>${data.win_rate}%</span></div>
-                    <div class="stat-card"><span>Stake: </span><span>$${data.current_stake.toFixed(2)}</span></div>
-                    <div class="stat-card"><span>Loss Streak: </span><span>${data.consecutive_losses}</span></div>
-                    <div class="stat-card"><span>Asset: </span><span>${data.current_asset || "None"}</span></div>
-                </div>
-            `;
-            document.getElementById('stats').innerHTML = statsHtml;
+// ─── Update UI elements ────────────────────────────────
+function updateUI(data) {
+    // Stats
+    document.getElementById('balance').textContent = '$' + data.balance.toFixed(2);
+    document.getElementById('totalPnl').textContent = '$' + data.total_pnl.toFixed(2);
+    document.getElementById('winRate').textContent = data.win_rate + '%';
+    document.getElementById('stake').textContent = '$' + data.current_stake.toFixed(2);
+    document.getElementById('lossStreak').textContent = data.consecutive_losses;
+    document.getElementById('assetName').textContent = data.current_asset || 'None';
+    document.getElementById('payout').textContent = data.current_payout + '%';
+    document.getElementById('secondsDisplay').textContent = data.seconds_into_candle;
+
+    // Candle colour
+    const candleSpan = document.getElementById('candleInfo');
+    const color = data.candle_color;
+    if (color === 'GREEN') {
+        candleSpan.innerHTML = '<span style="color:#22c55e;">● GREEN</span> <span id="secondsDisplay">' + data.seconds_into_candle + '</span>s';
+    } else if (color === 'RED') {
+        candleSpan.innerHTML = '<span style="color:#ef4444;">● RED</span> <span id="secondsDisplay">' + data.seconds_into_candle + '</span>s';
+    } else {
+        candleSpan.innerHTML = color + ' <span id="secondsDisplay">' + data.seconds_into_candle + '</span>s';
+    }
+
+    // Quick stats
+    document.getElementById('quickBalance').textContent = '$' + data.balance.toFixed(2);
+    document.getElementById('quickAsset').textContent = data.current_asset || 'None';
+    const modeText = data.manual_asset ? 'Manual' : 'Auto';
+    document.getElementById('modeDisplay').textContent = modeText;
+
+    // Update controls: buttons
+    const btnGroup = document.getElementById('buttonGroup');
+    let html = '';
+    if (!data.connected) {
+        html = `<button class="btn btn-primary" id="connectBtn" onclick="doAction('/api/connect')">Connect</button>`;
+    } else {
+        html = `<span class="badge connected">✅ Connected</span>`;
+        if (!data.running) {
+            html += ` <button class="btn btn-success" id="startBtn" onclick="doAction('/api/start')">Start</button>`;
+        } else {
+            html += ` <button class="btn btn-danger" id="stopBtn" onclick="doAction('/api/stop')">Stop</button>`;
+            html += ` <span class="badge running">▶ Running</span>`;
         }
+    }
+    btnGroup.innerHTML = html;
 
-        // --- HTTP polling ---
-        function startPolling() {
-            if (pollIntervalId) return;
-            console.log('🔄 WebSocket failed, switching to HTTP polling...');
-            usePolling = true;
-            fetchStatsViaHttp();
-            pollIntervalId = setInterval(fetchStatsViaHttp, POLL_INTERVAL_MS);
-        }
+    // Update asset dropdown and mode badge
+    const select = document.getElementById('assetSelect');
+    const manual = data.manual_asset;
+    if (manual && manual !== 'auto') {
+        select.value = manual;
+    } else {
+        select.value = 'auto';
+    }
+    // Update mode badge
+    const modeBadge = document.getElementById('modeBadge');
+    if (manual) {
+        modeBadge.innerHTML = `<span class="badge manual">🔒 Manual</span>`;
+    } else {
+        modeBadge.innerHTML = `<span class="badge auto">🔄 Auto</span>`;
+    }
+}
 
-        function stopPolling() {
-            if (pollIntervalId) {
-                clearInterval(pollIntervalId);
-                pollIntervalId = null;
-                usePolling = false;
-                console.log('✅ Switched back to WebSocket, polling stopped.');
-            }
-        }
+// ─── Actions (POST then re-poll) ──────────────────────
+function doAction(url) {
+    fetch(url, { method: 'POST' })
+        .then(r => r.json())
+        .then(res => {
+            if (res.ok) fetchStats();
+        })
+        .catch(e => console.warn('Action error:', e));
+}
 
-        function fetchStatsViaHttp() {
-            fetch('/api/status')
-                .then(response => {
-                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                    return response.json();
-                })
-                .then(data => updateStats(data))
-                .catch(() => {}); // silent fail
-        }
+function selectAsset(asset) {
+    const formData = new FormData();
+    formData.append('asset', asset);
+    fetch('/api/select_asset', { method: 'POST', body: formData })
+        .then(r => r.json())
+        .then(res => {
+            if (res.ok) fetchStats();
+        })
+        .catch(e => console.warn('Asset select error:', e));
+}
 
-        // --- WebSocket ---
-        function initWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-            const ws = new WebSocket(`${protocol}${window.location.host}/ws`);
-
-            ws.onopen = function() {
-                console.log('✅ WebSocket connected');
-                if (usePolling) stopPolling();
-            };
-
-            ws.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    updateStats(data);
-                } catch (e) {
-                    console.warn('WebSocket parse error:', e);
-                }
-            };
-
-            ws.onclose = function() {
-                console.warn('⚠️ WebSocket closed, starting polling fallback...');
-                startPolling();
-            };
-
-            ws.onerror = function() {
-                console.warn('⚠️ WebSocket error, starting polling fallback...');
-                startPolling();
-            };
-        }
-
-        // --- Start ---
-        initWebSocket();
-
-        // Fallback: if no stats after 3s, force polling
-        setTimeout(() => {
-            const statsEl = document.getElementById('stats');
-            if (statsEl && statsEl.innerHTML.trim() === 'Loading stats...') {
-                console.warn('⏰ No stats update after 3s, forcing polling...');
-                startPolling();
-            }
-        }, 3000);
-    })();
+// ─── Start polling ──────────────────────────────────────
+setInterval(fetchStats, 500);
+fetchStats(); // immediate first update
 </script>
 {% endblock %}

@@ -1,14 +1,35 @@
-<div class="control-panel">
+<section id="control">
     <div class="controls">
-        {% if not connected %}
-            <button hx-post="/api/connect" hx-target="#control" hx-swap="innerHTML">Connect</button>
-        {% else %}
-            <button hx-post="/api/start" hx-target="#control" hx-swap="innerHTML" {% if running %}disabled{% endif %}>Start Bot</button>
-            <button hx-post="/api/stop" hx-target="#control" hx-swap="innerHTML" {% if not running %}disabled{% endif %}>Stop Bot</button>
-        {% endif %}
+        <div class="control-buttons">
+            {% if not connected %}
+                <button hx-post="/api/connect" hx-target="#control" hx-swap="outerHTML">Connect</button>
+            {% else %}
+                <span class="badge connected">✅ Connected</span>
+                {% if not running %}
+                    <button hx-post="/api/start" hx-target="#control" hx-swap="outerHTML">Start Trading</button>
+                {% else %}
+                    <button hx-post="/api/stop" hx-target="#control" hx-swap="outerHTML">Stop Trading</button>
+                    <span class="badge running">▶ Running</span>
+                {% endif %}
+            {% endif %}
+        </div>
+
+        <div class="asset-selection">
+            <label for="asset-select">Trading Asset:</label>
+            <select id="asset-select" name="asset" hx-post="/api/select_asset" hx-target="#control" hx-swap="outerHTML" hx-trigger="change">
+                <option value="auto" {% if not manual_asset %}selected{% endif %}>Auto (switch after win)</option>
+                {% for a in assets %}
+                    <option value="{{ a.symbol }}" {% if manual_asset == a.symbol %}selected{% endif %}>
+                        {{ a.symbol }} (Payout: {{ a.payout }}%)
+                    </option>
+                {% endfor %}
+            </select>
+            <span class="current-payout">Current Payout: {{ stats.current_payout }}%</span>
+        </div>
+
+        <div class="quick-stats">
+            <span>Balance: {{ stats.balance|currency }}</span>
+            <span>Current Asset: {{ stats.current_asset or 'None' }}</span>
+        </div>
     </div>
-    <div class="status-grid">
-        <div class="status-item"><span>Status:</span> <strong>{{ "Running" if running else "Stopped" }}</strong></div>
-        <div class="status-item"><span>Connected:</span> <strong>{{ "Yes" if connected else "No" }}</strong></div>
-    </div>
-</div>
+</section>

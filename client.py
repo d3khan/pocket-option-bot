@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 from datetime import timedelta
 
 from BinaryOptionsToolsV2 import PocketOptionAsync
@@ -97,16 +97,29 @@ class POClient:
             logger.error(f"Candles error: {e}")
             return []
 
-    async def subscribe_candles(self, asset: str, callback):
+    async def subscribe_candles(self, asset: str, callback: Callable):
         if not self.is_connected:
             return
         try:
-            # Use timedelta for interval
             sub = await self._client.subscribe_symbol_time_aligned(asset, timedelta(seconds=60))
             async for candle in sub:
                 await callback({**candle, "asset": asset})
         except Exception as e:
-            logger.error(f"Subscription error: {e}")
+            logger.error(f"Candles subscription error: {e}")
+
+    async def subscribe_price(self, asset: str, callback: Callable):
+        """Subscribe to real‑time price ticks for the given asset."""
+        if not self.is_connected:
+            return
+        try:
+            sub = await self._client.subscribe_symbol(asset)
+            async for tick in sub:
+                # tick is expected to be a dict with 'price' key
+                price = tick.get("price")
+                if price is not None:
+                    await callback({"asset": asset, "price": float(price)})
+        except Exception as e:
+            logger.error(f"Price subscription error: {e}")
 
     async def unsubscribe(self, asset: str):
         if self._client:

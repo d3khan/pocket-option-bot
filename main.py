@@ -1,12 +1,11 @@
 import asyncio
 import logging
-import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from jinja2 import Environment, FileSystemLoader
@@ -18,16 +17,13 @@ from bot import TradingBot
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create data dir
 Path("data").mkdir(exist_ok=True)
 
-# Globals
 client = POClient(settings.ssid)
 bot = TradingBot(client)
 
 app = FastAPI(title="Pocket Bot Simple")
 
-# ---------- Direct Jinja2 Environment ----------
 TEMPLATES_DIR = str(Path(__file__).parent / "templates")
 jinja_env = Environment(
     loader=FileSystemLoader(TEMPLATES_DIR),
@@ -41,11 +37,10 @@ def render_template(name: str, **context):
     html = template.render(**context)
     return HTMLResponse(content=html)
 
-# Static files
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
-# ---------- Server-side session store ----------
-sessions = {}  # token -> {"username": str, "expires": datetime}
+# ---------- Session store ----------
+sessions = {}
 SESSION_COOKIE = "session"
 SESSION_EXPIRE_DAYS = 1
 
@@ -60,10 +55,8 @@ def get_session(request: Request):
     if not token:
         return None
     session = sessions.get(token)
-    if not session:
-        return None
-    if session["expires"] < datetime.now(timezone.utc):
-        del sessions[token]  # clean up expired
+    if not session or session["expires"] < datetime.now(timezone.utc):
+        sessions.pop(token, None)
         return None
     return session["username"]
 
@@ -75,7 +68,7 @@ def set_session_cookie(response: Response, token: str):
         max_age=SESSION_EXPIRE_DAYS * 24 * 60 * 60,
         samesite="lax",
         path="/",
-        secure=False,        # Works on HTTP and HTTPS
+        secure=False,
     )
 
 def clear_session_cookie(response: Response):
@@ -91,16 +84,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith(("/login", "/static", "/favicon.ico")):
             return await call_next(request)
-
         username = get_session(request)
         if not username:
             return RedirectResponse("/login", status_code=303)
-
         return await call_next(request)
 
 app.add_middleware(AuthMiddleware)
 
-# ---------- Routes ----------
+# ---------- Login / Logout ----------
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     return render_template("login.html", request=request)
@@ -110,10 +101,8 @@ async def login(request: Request, response: Response):
     form = await request.form()
     username = form.get("username", "").strip()
     password = form.get("password", "").strip()
-
     if username != settings.username or password != settings.password:
         return render_template("login.html", request=request, error="Invalid credentials")
-
     resp = RedirectResponse(url="/", status_code=303)
     token = create_session(username)
     set_session_cookie(resp, token)
@@ -129,81 +118,53 @@ async def logout(request: Request, response: Response):
     await bot.disconnect()
     return RedirectResponse(url="/login", status_code=303)
 
+# ---------- Main Dashboard ----------
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    return render_template("dashboard.html", request=request)
-
-@app.get("/partials/control", response_class=HTMLResponse)
-async def control_partial(request: Request):
     stats = bot.get_stats()
+    assets = bot.get_filtered_assets_for_display()
+    assets.sort(key=lambda x: x["payout"], reverse=True)
     return render_template(
-        "partials/control.html",
+        "dashboard.html",
         request=request,
-        running=stats.get("running", False),
-        connected=stats.get("connected", False),
+        stats=stats,
+        assets=assets,
+        manual_asset=stats.get("manual_asset"),
         config=settings,
     )
 
-@app.post("/api/connect", response_class=HTMLResponse)
-async def connect(request: Request):
-    await bot.connect()
-    stats = bot.get_stats()
-    return render_template(
-        "partials/control.html",
-        request=request,
-        running=stats.get("running", False),
-        connected=stats.get("connected", False),
-        config=settings,
-    )
-
-@app.post("/api/start", response_class=HTMLResponse)
-async def start_trading(request: Request):
-    if bot._connected and not bot._running:
-        await bot.start_trading()
-    stats = bot.get_stats()
-    return render_template(
-        "partials/control.html",
-        request=request,
-        running=stats.get("running", False),
-        connected=stats.get("connected", False),
-        config=settings,
-    )
-
-@app.post("/api/stop", response_class=HTMLResponse)
-async def stop_trading(request: Request):
-    if bot._running:
-        await bot.stop_trading()
-    stats = bot.get_stats()
-    return render_template(
-        "partials/control.html",
-        request=request,
-        running=stats.get("running", False),
-        connected=stats.get("connected", False),
-        config=settings,
-    )
-
+# ---------- JSON API for polling ----------
 @app.get("/api/status")
 async def status():
     return bot.get_stats()
 
-# ---------- WebSocket ----------@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            stats = bot.get_stats()
-            try:
-                await websocket.send_json(stats)
-            except (RuntimeError, WebSocketDisconnect, ConnectionResetError) as e:
-                logger.warning(f"WebSocket send error: {e}")
-                break
-            await asyncio.sleep(1)
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-    finally:
-        await websocket.close()
+# ---------- Action endpoints (return JSON) ----------
+@app.post("/api/connect")
+async def api_connect():
+    await bot.connect()
+    return JSONResponse({"ok": True})
+
+@app.post("/api/start")
+async def api_start():
+    if bot._connected and not bot._running:
+        await bot.start_trading()
+    return JSONResponse({"ok": True})
+
+@app.post("/api/stop")
+async def api_stop():
+    if bot._running:
+        await bot.stop_trading()
+    return JSONResponse({"ok": True})
+
+@app.post("/api/select_asset")
+async def api_select_asset(request: Request):
+    form = await request.form()
+    asset = form.get("asset")
+    if asset == "auto":
+        await bot.clear_manual_asset()
+    else:
+        await bot.set_manual_asset(asset)
+    return JSONResponse({"ok": True})
 
 # ---------- Lifespan ----------
 @asynccontextmanager

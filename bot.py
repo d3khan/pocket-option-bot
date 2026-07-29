@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from collections import deque
 
 from client import POClient
@@ -16,7 +16,7 @@ class TradingBot:
         self._task: Optional[asyncio.Task] = None
         self._current_asset: Optional[str] = None
         self._eligible_assets: list = []
-        self._recent_trades = deque(maxlen=10)  # remember last 10 assets
+        self._recent_trades = deque(maxlen=10)
 
         # Risk state (martingale)
         self.stake = settings.base_stake
@@ -31,8 +31,9 @@ class TradingBot:
         self.losses = 0
         self.trade_history = []
 
-        # Candle
+        # Candle data
         self.current_candle: Dict = {}
+        self.current_price: Optional[float] = None   # last tick price
 
         # Connection
         self._connected = False
@@ -41,6 +42,12 @@ class TradingBot:
 
         # Prevent multiple trades on same candle
         self._last_traded_candle_time: Optional[float] = None
+
+        # Manual asset selection (None = auto)
+        self._manual_asset: Optional[str] = None
+
+        # Price subscription task
+        self._price_task: Optional[asyncio.Task] = None
 
     # ---------- Connection ----------
     async def connect(self) -> bool:
@@ -64,6 +71,8 @@ class TradingBot:
             self._task.cancel()
         if self._data_task:
             self._data_task.cancel()
+        if self._price_task:
+            self._price_task.cancel()
         await self.client.disconnect()
         logger.info("Disconnected")
 
@@ -79,9 +88,8 @@ class TradingBot:
                 await asyncio.sleep(5)
 
     async def _refresh_assets_loop(self):
-        """Periodically refresh asset payouts every 1 minute."""
         while self._connected:
-            await asyncio.sleep(60)  
+            await asyncio.sleep(60)
             await self._scan_assets()
             logger.info("Asset payouts refreshed")
 
@@ -98,63 +106,102 @@ class TradingBot:
         self._eligible_assets.sort(key=lambda x: x["payout"], reverse=True)
         logger.info(f"Eligible assets: {len(self._eligible_assets)}")
 
+    def _auto_select_asset(self) -> Optional[str]:
+        for a in self._eligible_assets:
+            if a["symbol"] not in self._recent_trades:
+                return a["symbol"]
+        return self._eligible_assets[0]["symbol"] if self._eligible_assets else None
+
     async def _switch_asset(self):
         if not self._eligible_assets:
             return
 
-        # Pick the highest payout asset not in recent trades
-        for a in self._eligible_assets:
-            if a["symbol"] not in self._recent_trades:
-                chosen = a
-                break
+        if self._manual_asset is not None:
+            if self._manual_asset in [a["symbol"] for a in self._eligible_assets]:
+                target = self._manual_asset
+            else:
+                self._manual_asset = None
+                target = self._auto_select_asset()
         else:
-            chosen = self._eligible_assets[0]
+            target = self._auto_select_asset()
 
+        if target is None:
+            return
+        if self._current_asset == target:
+            return
+
+        # Unsubscribe old
         if self._current_asset:
             try:
                 await self.client.unsubscribe(self._current_asset)
             except Exception as e:
                 logger.warning(f"Unsubscribe error: {e}")
 
-        self._current_asset = chosen["symbol"]
-        self.current_candle = {}  # Clear old candle data
-        self._last_traded_candle_time = None  # Reset guard for new asset
+        self._current_asset = target
+        self.current_candle = {}
+        self.current_price = None
+        self._last_traded_candle_time = None
 
+        # Subscribe to candles
         asyncio.create_task(self.client.subscribe_candles(self._current_asset, self._on_candle))
+        # Subscribe to price ticks (run in background)
+        if self._price_task:
+            self._price_task.cancel()
+        self._price_task = asyncio.create_task(self.client.subscribe_price(self._current_asset, self._on_price))
+
         logger.info(f"Switched to asset: {self._current_asset}")
 
+    async def set_manual_asset(self, asset: str) -> bool:
+        if asset not in [a["symbol"] for a in self._eligible_assets]:
+            return False
+        self._manual_asset = asset
+        await self._switch_asset()
+        return True
+
+    async def clear_manual_asset(self):
+        self._manual_asset = None
+        await self._switch_asset()
+
+    def get_filtered_assets_for_display(self) -> List[Dict]:
+        return [a for a in self._eligible_assets if "EUR" in a["symbol"] or "USD" in a["symbol"]]
+
+    # ---------- Callbacks ----------
     async def _on_candle(self, candle: Dict):
         if candle.get("asset") != self._current_asset:
             return
         try:
-            if "time" in candle:
-                t = candle["time"]
-                if isinstance(t, datetime):
-                    candle["time"] = t.timestamp()
-                elif isinstance(t, str):
+            # Normalise time
+            t = candle.get("time")
+            if isinstance(t, datetime):
+                candle["time"] = t.timestamp()
+            elif isinstance(t, str):
+                try:
+                    dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
+                    candle["time"] = dt.timestamp()
+                except ValueError:
                     try:
-                        dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
+                        dt = datetime.strptime(t, "%Y-%m-%d %H:%M:%S")
+                        dt = dt.replace(tzinfo=timezone.utc)
                         candle["time"] = dt.timestamp()
                     except ValueError:
-                        try:
-                            dt = datetime.strptime(t, "%Y-%m-%d %H:%M:%S")
-                            dt = dt.replace(tzinfo=timezone.utc)
-                            candle["time"] = dt.timestamp()
-                        except ValueError:
-                            logger.warning(f"Unrecognized time format: {t}")
-                            candle["time"] = datetime.now(timezone.utc).timestamp()
-                elif isinstance(t, (int, float)):
-                    pass
-                else:
-                    candle["time"] = datetime.now(timezone.utc).timestamp()
-            else:
+                        candle["time"] = datetime.now(timezone.utc).timestamp()
+            elif not isinstance(t, (int, float)):
                 candle["time"] = datetime.now(timezone.utc).timestamp()
+            # Ensure open and close are floats
+            candle["open"] = float(candle.get("open", 0))
+            candle["close"] = float(candle.get("close", 0))
         except Exception as e:
-            logger.error(f"Error processing candle time: {e}")
-            candle["time"] = datetime.now(timezone.utc).timestamp()
+            logger.error(f"Error processing candle: {e}")
+            return
 
         self.current_candle = candle
-        logger.debug(f"Candle updated: {candle.get('asset')} close={candle.get('close')}")
+        logger.debug(f"Candle updated: {candle.get('asset')} open={candle['open']} close={candle['close']}")
+
+    async def _on_price(self, tick: Dict):
+        if tick.get("asset") != self._current_asset:
+            return
+        self.current_price = tick.get("price")
+        # logger.debug(f"Price update: {self.current_price}")
 
     # ---------- Trading ----------
     async def start_trading(self):
@@ -186,32 +233,39 @@ class TradingBot:
                         candle_start = datetime.fromtimestamp(self.current_candle["time"], tz=timezone.utc)
                         now = datetime.now(timezone.utc)
                         seconds_into = (now - candle_start).total_seconds()
-                        
+
                         if 30.0 <= seconds_into < 31.0:
                             candle_time = self.current_candle["time"]
                             if self._last_traded_candle_time != candle_time:
                                 logger.info(f"Signal triggered at {seconds_into:.1f}s for {self._current_asset}")
-                                await self._on_signal(self.current_candle)
+                                await self._on_signal()
                                 self._last_traded_candle_time = candle_time
                     except Exception as e:
                         logger.error(f"Error processing candle time: {e}")
                         await asyncio.sleep(0.5)
                         continue
-                await asyncio.sleep(0.5)  # Check frequently
+                await asyncio.sleep(0.5)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Trade loop error: {e}")
                 await asyncio.sleep(1)
 
-    async def _on_signal(self, candle: Dict):
+    async def _on_signal(self):
         if not self._running:
             return
-        direction = "CALL" if candle["close"] > candle["open"] else "PUT"
+
+        # Use current price vs open to decide direction
+        open_price = self.current_candle.get("open")
+        if open_price is None or self.current_price is None:
+            logger.warning("Missing price data, skipping trade")
+            return
+
+        direction = "CALL" if self.current_price > open_price else "PUT"
         stake = self.stake
         duration = settings.trade_duration
 
-        logger.info(f"Trade signal: {direction} on {self._current_asset} at {candle['close']}")
+        logger.info(f"Trade signal: {direction} on {self._current_asset} | open={open_price} current={self.current_price}")
 
         result = await self.client.place_trade(
             self._current_asset, direction, stake, duration, check_win=True
@@ -240,10 +294,8 @@ class TradingBot:
             self.total_pnl += trade["pnl"]
             self.daily_pnl += trade["pnl"]
 
-            # Record this asset as recently traded
             self._recent_trades.append(self._current_asset)
 
-            # --- Martingale logic ---
             if win:
                 self.wins += 1
                 self.stake = settings.base_stake
@@ -255,16 +307,44 @@ class TradingBot:
                 if self.consecutive_losses >= settings.max_consecutive_losses:
                     self.reset_martingale()
 
-            # --- SWITCH ASSET AFTER EVERY TRADE ---
-            await self._switch_asset()
+            if self._manual_asset is None:
+                await self._switch_asset()
 
             logger.info(f"Trade {trade['result']}: {direction} {self._current_asset} {stake:.2f} P&L: {trade['pnl']:.2f}")
         else:
             logger.error("Trade failed – no result")
 
+    # ---------- Stats / UI ----------
+    def get_candle_color(self) -> str:
+        """Real‑time colour based on current price vs open."""
+        if self.current_price is None:
+            return "N/A"
+        open_price = self.current_candle.get("open")
+        if open_price is None:
+            return "N/A"
+        return "GREEN" if self.current_price > open_price else "RED"
+
+    def get_seconds_into_candle(self) -> float:
+        if not self.current_candle or "time" not in self.current_candle:
+            return 0.0
+        try:
+            start = datetime.fromtimestamp(self.current_candle["time"], tz=timezone.utc)
+            now = datetime.now(timezone.utc)
+            return (now - start).total_seconds()
+        except Exception:
+            return 0.0
+
     def get_stats(self) -> Dict:
         total = self.wins + self.losses
         win_rate = (self.wins / total * 100) if total > 0 else 0.0
+
+        current_payout = 0
+        if self._current_asset:
+            for a in self._eligible_assets:
+                if a["symbol"] == self._current_asset:
+                    current_payout = a["payout"]
+                    break
+
         return {
             "balance": self.balance,
             "total_pnl": self.total_pnl,
@@ -274,14 +354,17 @@ class TradingBot:
             "consecutive_losses": self.consecutive_losses,
             "current_stake": self.stake,
             "current_asset": self._current_asset,
+            "current_payout": current_payout,
+            "manual_asset": self._manual_asset,
             "trades": self.trade_history[:20],
             "candle": self.current_candle,
             "connected": self._connected,
             "running": self._running,
+            "candle_color": self.get_candle_color(),
+            "seconds_into_candle": round(self.get_seconds_into_candle(), 1),
         }
 
     def reset_stats(self):
-        """Reset all trading statistics to their initial state."""
         self.stake = settings.base_stake
         self.consecutive_losses = 0
         self.daily_pnl = 0.0
@@ -291,9 +374,11 @@ class TradingBot:
         self.losses = 0
         self.trade_history = []
         self.current_candle = {}
+        self.current_price = None
         self._last_traded_candle_time = None
         self._recent_trades.clear()
         self._current_asset = None
+        self._manual_asset = None
 
     def reset_martingale(self):
         self.stake = settings.base_stake
