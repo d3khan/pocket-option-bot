@@ -1,21 +1,27 @@
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 
 import numpy as np
-import pandas as pd
 
 from client import POClient
-from candle_client import CandleClient
+from multi_candle_client import MultiCandleClient
 from config import settings
-from signals import signal
 
 logger = logging.getLogger(__name__)
 
+# Milliseconds before :00 to fire the trade request.
+# PocketOption usually accepts trades placed a few hundred ms before the
+# candle open and assigns them to the new candle.  If your trades are
+# still landing 1 s late, increase this (e.g. 400).  If they are being
+# rejected as "too early", decrease it (e.g. 100).
+FIRE_EARLY_MS = 500
+
 
 class TradingBot:
-    def __init__(self, client: POClient, candle_client: CandleClient):
+    def __init__(self, client: POClient, candle_client: MultiCandleClient):
         self.client = client
         self.candle_client = candle_client
         self._running = False
@@ -125,56 +131,35 @@ class TradingBot:
         ema_strength = abs(close - ema20) / ema20 * 1000.0
         return rsi_strength + ema_strength
 
-    # ---------- Signal fetch (reverse-engineered candle API + TA-Lib) ----------
-    async def _fetch_signal_for_asset(self, symbol: str) -> Optional[Dict[str, Any]]:
-        try:
-            df = await self.candle_client.get_candles(symbol, settings.candle_period)
-            if df.empty or len(df) < 30:
-                logger.debug(f"Not enough candle data for {symbol} ({len(df)} rows)")
-                return None
-
-            required = {"open", "high", "low", "close"}
-            missing = required - set(df.columns)
-            if missing:
-                logger.debug(f"{symbol} missing columns: {missing}")
-                return None
-
-            signal_info = signal(df)
-            if signal_info["signal"] == "NONE":
-                return None
-
-            signal_info["symbol"] = symbol
-            return signal_info
-
-        except Exception as e:
-            logger.warning(f"Signal error for {symbol}: {e}")
-            return None
-
-    # ---------- Asset Selection (EMA20 + RSI14 scoring) ----------
+    # ---------- Asset Selection (parallel EMA20 + RSI14 scoring) ----------
     async def _pick_best_asset(self) -> Optional[Dict[str, Any]]:
         await self._scan_assets()
         if not self._eligible_assets:
             logger.info("No eligible assets found.")
             return None
 
-        candidates = []
-        for asset in self._eligible_assets:
-            symbol = asset["symbol"]
-            signal_info = await self._fetch_signal_for_asset(symbol)
-            if signal_info:
-                score = self._calculate_score(signal_info)
-                candidates.append({
-                    "symbol": symbol,
-                    "payout": asset["payout"],
-                    "score": score,
-                    "signal": signal_info["signal"],
-                    "info": signal_info,
-                })
-            await asyncio.sleep(0.05)
+        symbols = [a["symbol"] for a in self._eligible_assets]
+        all_signals = await self.candle_client.fetch_signals(
+            symbols, settings.candle_period
+        )
 
-        if not candidates:
+        if not all_signals:
             logger.info("No valid signals found.")
             return None
+
+        candidates = []
+        for symbol, sig in all_signals.items():
+            payout = next(
+                (a["payout"] for a in self._eligible_assets if a["symbol"] == symbol), 0
+            )
+            score = self._calculate_score(sig)
+            candidates.append({
+                "symbol": symbol,
+                "payout": payout,
+                "score": score,
+                "signal": sig["signal"],
+                "info": sig,
+            })
 
         best = max(candidates, key=lambda x: x["score"])
         logger.info(
@@ -206,24 +191,30 @@ class TradingBot:
         logger.info("Trading stopped")
 
     async def _wait_for_next_candle(self):
-        """Block until the exact :00.000 second of the next minute candle."""
+        """Block until ~FIRE_EARLY_MS before the next :00 boundary,
+        then busy-wait with 1 ms sleeps for sub-10 ms precision.
+        """
         now = datetime.now(timezone.utc)
-        # Target: next minute boundary, seconds=0, microseconds=0
         target = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
-        wait_seconds = (target - now).total_seconds()
+        fire_at = target - timedelta(milliseconds=FIRE_EARLY_MS)
+        wait_seconds = (fire_at - now).total_seconds()
 
         if wait_seconds > 0:
             logger.info(
-                f"⏳ Waiting {wait_seconds:.3f}s until exact candle open "
+                f"⏳ Waiting {wait_seconds:.3f}s until candle open "
                 f"({target.strftime('%H:%M:%S')})..."
             )
-            # Sleep the bulk, then tight-loop the last 100 ms for precision
-            if wait_seconds > 0.15:
-                await asyncio.sleep(wait_seconds - 0.1)
+            # Async sleep the bulk, leaving 300 ms for precision approach
+            if wait_seconds > 0.35:
+                await asyncio.sleep(wait_seconds - 0.3)
 
-            # Fine-tune: spin-yield until we hit the boundary
-            while datetime.now(timezone.utc) < target:
-                await asyncio.sleep(0)  # yield but return immediately
+            # Final 300 ms: blocking 1 ms sleeps for high precision.
+            # This briefly blocks the event loop but guarantees sub-10 ms accuracy.
+            while True:
+                remaining = (fire_at - datetime.now(timezone.utc)).total_seconds()
+                if remaining <= 0:
+                    break
+                time.sleep(0.001)
 
         now = datetime.now(timezone.utc)
         logger.info(f"🕐 Candle open reached: {now.strftime('%H:%M:%S.%f')[:-3]}")
@@ -244,16 +235,13 @@ class TradingBot:
                 rsi14 = signal_info.get("rsi", 0.0)
                 close = signal_info.get("close", 0.0)
 
-                # Log the signal
                 logger.info(
                     f"🎯 SIGNAL: {direction} on {self._current_asset} | "
                     f"Close: {close:.5f} | EMA20: {ema20:.5f} | RSI14: {rsi14:.2f}"
                 )
 
-                # Wait until the exact start of the next minute candle (:00.000)
                 await self._wait_for_next_candle()
 
-                # Place trade exactly at candle open
                 logger.info(
                     f"💹 PLACING TRADE: {direction} on {self._current_asset} "
                     f"for {settings.trade_duration}s with ${self.stake}"
@@ -266,7 +254,6 @@ class TradingBot:
                     check_win=True,
                 )
 
-                # Log trade placement with indicator values
                 logger.info(
                     f"📊 TRADE PLACED: {direction} {self._current_asset} | "
                     f"Stake: ${self.stake:.2f} | EMA20: {ema20:.5f} | RSI14: {rsi14:.2f}"

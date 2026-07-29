@@ -13,7 +13,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from config import settings
 from client import POClient
-from candle_client import CandleClient
+from multi_candle_client import MultiCandleClient
 from bot import TradingBot
 
 # Suppress uvicorn access logs
@@ -28,7 +28,7 @@ Path("data").mkdir(exist_ok=True)
 
 # Globals
 client = POClient(settings.ssid)
-candle_client = CandleClient()
+candle_client = MultiCandleClient(num_workers=5)
 bot = TradingBot(client, candle_client)
 
 # Connection status tracking
@@ -109,10 +109,6 @@ app.add_middleware(AuthMiddleware)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Application starting")
-    # Pre-connect the candle client (reverse-engineered data API)
-    cc_ok = await candle_client.connect()
-    if not cc_ok:
-        logger.error("❌ Candle client failed to connect on startup")
     yield
     logger.info("🛑 Application shutting down...")
     await bot.disconnect()
