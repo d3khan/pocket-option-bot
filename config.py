@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     rsi_period: int = 14
     rsi_overbought: int = 60
     rsi_oversold: int = 40
-    max_consecutive_losses: int = 3
+    max_consecutive_losses: int = 2
     max_daily_loss: float = 50.0
     username: str = os.getenv("PO_USERNAME", "d3khan04")
     password: str = os.getenv("PO_PASSWORD", "fake_smile02")

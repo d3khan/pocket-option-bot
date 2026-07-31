@@ -14,15 +14,13 @@ def _fetch_signals_for_batch(symbols: List[str], period: int, ssid: str) -> Dict
     Worker function – runs in an isolated OS process.
     Uses the raw PO api (bypassing stable_api wrappers) for speed.
     """
-    # ===== CRITICAL FIX: Create a new event loop for this process =====
+    # Create a fresh event loop for this process
     import asyncio
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-    # Now safe to import modules that use asyncio.get_event_loop()
+    # Stub optional deps
     import sys
     from types import ModuleType
-
-    # Stub optional deps (webview, tzlocal) that might be imported by stable_api
     for mod_name in ("webview", "tzlocal"):
         if mod_name not in sys.modules:
             stub = ModuleType(mod_name)
@@ -40,12 +38,22 @@ def _fetch_signals_for_batch(symbols: List[str], period: int, ssid: str) -> Dict
     import pocketoptionapi.global_value as gv
     from signals import signal
 
-    po = PocketOption(ssid=ssid, demo=True)
-    po.connect()
+    # Reset global state to force a fresh connection
+    gv.websocket_is_connected = False
 
-    # Wait for websocket handshake (max 20 s)
+    po = PocketOption(ssid=ssid, demo=True)
+    connected = po.connect()
+    if not connected:
+        logger.warning("Worker PO connection failed")
+        try:
+            po.disconnect()
+        except Exception:
+            pass
+        return {}
+
+    # Wait for websocket handshake (max 15 s)
     t0 = time.time()
-    while not gv.websocket_is_connected and time.time() - t0 < 20:
+    while not gv.websocket_is_connected and time.time() - t0 < 15:
         time.sleep(0.05)
 
     if not gv.websocket_is_connected:
@@ -59,13 +67,9 @@ def _fetch_signals_for_batch(symbols: List[str], period: int, ssid: str) -> Dict
     results = {}
     for symbol in symbols:
         try:
-            # Reset response slot
             po.api.history_new = None
-
-            # Fire changeSymbol request
             po.api.change_symbol(symbol, period)
 
-            # Poll for response with hard 5 s cap
             t0 = time.time()
             while po.api.history_new is None and time.time() - t0 < 5:
                 time.sleep(0.05)
@@ -76,7 +80,6 @@ def _fetch_signals_for_batch(symbols: List[str], period: int, ssid: str) -> Dict
             his = po.api.history_new
             candles = []
 
-            # Parse the response payload
             if isinstance(his, dict):
                 if "candles" in his and his["candles"]:
                     for c in his["candles"]:
@@ -109,10 +112,12 @@ def _fetch_signals_for_batch(symbols: List[str], period: int, ssid: str) -> Dict
             logger.debug(f"Worker error on {symbol}: {exc}")
             continue
 
+    # Clean disconnection and reset global state
     try:
         po.disconnect()
     except Exception:
         pass
+    gv.websocket_is_connected = False
 
     return results
 
@@ -138,7 +143,7 @@ class MultiCandleClient:
         logger.info("MultiCandleClient shutdown")
 
     async def fetch_signals(
-        self, symbols: List[str], period: int = 60, timeout_per_batch: float = 45.0
+        self, symbols: List[str], period: int = 60, timeout_per_batch: float = 30.0
     ) -> Dict[str, Any]:
         if not symbols or not self._executor:
             return {}
