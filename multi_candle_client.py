@@ -53,7 +53,7 @@ def _fetch_signals_for_batch(symbols: List[str], period: int, ssid: str) -> Dict
 
     # Wait for websocket handshake (max 15 s)
     t0 = time.time()
-    while not gv.websocket_is_connected and time.time() - t0 < 15:
+    while not gv.websocket_is_connected and time.time() - t0 < 30:
         time.sleep(0.05)
 
     if not gv.websocket_is_connected:
