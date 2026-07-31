@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # candle open and assigns them to the new candle.  If your trades are
 # still landing 1 s late, increase this (e.g. 400).  If they are being
 # rejected as "too early", decrease it (e.g. 100).
-FIRE_EARLY_MS = 500
+FIRE_EARLY_MS = 1000
 
 
 class TradingBot:
