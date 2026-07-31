@@ -14,10 +14,15 @@ def _fetch_signals_for_batch(symbols: List[str], period: int, ssid: str) -> Dict
     Worker function – runs in an isolated OS process.
     Uses the raw PO api (bypassing stable_api wrappers) for speed.
     """
+    # ===== CRITICAL FIX: Create a new event loop for this process =====
+    import asyncio
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
+    # Now safe to import modules that use asyncio.get_event_loop()
     import sys
     from types import ModuleType
 
-    # Stub optional deps imported at package top-level
+    # Stub optional deps (webview, tzlocal) that might be imported by stable_api
     for mod_name in ("webview", "tzlocal"):
         if mod_name not in sys.modules:
             stub = ModuleType(mod_name)
