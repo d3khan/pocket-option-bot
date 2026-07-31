@@ -10,7 +10,9 @@ class Settings(BaseSettings):
     max_stake: float = 16.0
     min_payout: int = 92
     candle_period: int = 60          
-    trade_duration: int = 60          
+    trade_duration: int = 30
+    trade_asset: str = "EURUSD_otc"
+    trade_trigger_seconds: int = 28       
     ema_period: int = 20
     rsi_period: int = 14
     rsi_overbought: int = 60

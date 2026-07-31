@@ -228,4 +228,4 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-compare_data.py
+multi_candle_client.py

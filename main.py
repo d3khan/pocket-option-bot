@@ -13,7 +13,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from config import settings
 from client import POClient
-from multi_candle_client import MultiCandleClient
+from streaming_client import StreamingClient
 from bot import TradingBot
 
 # Suppress uvicorn access logs
@@ -28,10 +28,9 @@ Path("data").mkdir(exist_ok=True)
 
 # Globals
 client = POClient(settings.ssid)
-candle_client = MultiCandleClient(num_workers=5)
-bot = TradingBot(client, candle_client)
+streaming_client = StreamingClient(settings.ssid)
+bot = TradingBot(client, streaming_client)
 
-# Connection status tracking
 connection_status = "disconnected"
 connection_error = None
 
